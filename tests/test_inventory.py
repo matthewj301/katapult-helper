@@ -6,6 +6,7 @@ import pytest
 
 from katapult_helper.inventory import (
     Board,
+    Inventory,
     InventoryError,
     build_inventory,
     load_inventory,
@@ -130,6 +131,28 @@ def test_save_raw_preserves_comments(tmp_path: Path) -> None:
     out = p.read_text()
     assert "# preserve me" in out
     assert "new-board" in out
+
+
+def test_build_translates_called_process_error_to_clickexception(tmp_path: Path) -> None:
+    """ROM overflow / make link failure should produce a friendly ClickException
+    naming the board and listing common causes — not a raw CalledProcessError."""
+    import subprocess
+    from unittest.mock import patch
+    import click
+    from katapult_helper import build as build_mod
+    inv = Inventory(klipper_repo=tmp_path / "klipper", katapult_repo=tmp_path / "katapult")
+    inv.klipper_repo.mkdir()
+    cfg = tmp_path / "x.config"
+    cfg.write_text("# stub\n")
+    board = Board(name="t", transport="usb", klipper_config=cfg, chip_uid="AAA")
+    fake_err = subprocess.CalledProcessError(2, ["make", "-j4"])
+    with patch.object(build_mod, "run", side_effect=fake_err):
+        with pytest.raises(click.ClickException) as exc_info:
+            build_mod.build_board(inv, board, run_menuconfig=False)
+    msg = exc_info.value.message
+    assert "[t]" in msg
+    assert "make -j4" in msg
+    assert "ROM overflow" in msg
 
 
 def test_build_inventory_directly_from_dict() -> None:

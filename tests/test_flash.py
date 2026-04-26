@@ -1,9 +1,14 @@
 from __future__ import annotations
 
+import subprocess
 from pathlib import Path
 from unittest.mock import patch
 
+import click
+import pytest
+
 from katapult_helper import flash
+from katapult_helper.inventory import Board, Inventory
 
 
 def _make_by_id(tmp_path: Path, names: list[str]) -> Path:
@@ -74,3 +79,42 @@ def test_is_katapult_mode_via_proc() -> None:
     from katapult_helper._proc import is_katapult_mode
     assert is_katapult_mode(Path("/dev/serial/by-id/usb-katapult_stm32f446xx_AAA-if00"))
     assert not is_katapult_mode(Path("/dev/serial/by-id/usb-Klipper_stm32f446xx_AAA-if00"))
+
+
+def test_flash_translates_called_process_error_to_clickexception(tmp_path: Path) -> None:
+    """When flashtool.py exits non-zero, users should see a friendly multi-line
+    hint (covering klipper-still-holding-device, missing by-id, CAN UUID
+    mismatch) — not a CalledProcessError stack trace."""
+    inv = Inventory(klipper_repo=tmp_path / "klipper", katapult_repo=tmp_path / "katapult")
+    board = Board(
+        name="t", transport="usb",
+        klipper_config=tmp_path / "x.config", chip_uid="DEADBEEF",
+    )
+    by_id = tmp_path / "by-id"
+    by_id.mkdir()
+    (by_id / "usb-katapult_stm32_DEADBEEF-if00").write_text("")
+    fake_err = subprocess.CalledProcessError(1, ["python3", "flashtool.py"])
+    with (
+        patch.object(flash, "BY_ID", by_id),
+        patch.object(flash, "run", side_effect=fake_err),
+        pytest.raises(click.ClickException) as exc_info,
+    ):
+        flash.flash_board(inv, board, tmp_path / "klipper.bin")
+    msg = exc_info.value.message
+    assert "device already in use" in msg
+    assert "klipper.service" in msg
+
+
+def test_flash_missing_chip_uid_yields_friendly_error(tmp_path: Path) -> None:
+    inv = Inventory(klipper_repo=tmp_path / "klipper", katapult_repo=tmp_path / "katapult")
+    board = Board(
+        name="ghost", transport="usb",
+        klipper_config=tmp_path / "x.config", chip_uid="ABSENT",
+    )
+    empty = tmp_path / "by-id-empty"
+    empty.mkdir()
+    with patch.object(flash, "BY_ID", empty):
+        with pytest.raises(click.ClickException) as exc_info:
+            flash.flash_board(inv, board, tmp_path / "klipper.bin")
+    assert "discover" in exc_info.value.message
+    assert "ABSENT" in exc_info.value.message

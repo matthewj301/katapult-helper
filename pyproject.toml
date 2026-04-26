@@ -6,7 +6,7 @@ build-backend = "hatchling.build"
 name = "katapult-helper"
 version = "0.1.0"
 description = "Batch-build and flash Klipper firmware via the Katapult bootloader"
-requires-python = ">=3.11"
+requires-python = ">=3.9"
 dependencies = [
     "click>=8.1",
     "loguru>=0.7",
