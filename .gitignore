@@ -37,3 +37,6 @@ htmlcov/
 
 # Local-only inventory (the example is committed)
 inventory.yaml
+
+# Claude Code local-only settings
+.claude/settings.local.json

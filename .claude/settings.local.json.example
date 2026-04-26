@@ -1,0 +1,10 @@
+{
+  "_comment": "Copy to .claude/settings.local.json to add personal/local-only permissions; this file is committed as a template, the .local.json variant is gitignored.",
+  "permissions": {
+    "allow": [
+      "Bash(make:*)",
+      "Bash(make olddefconfig)",
+      "Bash(make menuconfig)"
+    ]
+  }
+}
