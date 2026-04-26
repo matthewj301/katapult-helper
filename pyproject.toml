@@ -18,4 +18,4 @@ dependencies = [
 katapult-helper = "katapult_helper.cli:cli"
 
 [tool.hatch.build.targets.wheel]
-packages = ["src/katapult_helper"]
+packages = ["katapult_helper"]
