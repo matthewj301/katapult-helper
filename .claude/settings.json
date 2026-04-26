@@ -7,26 +7,49 @@
       "Grep",
       "Edit",
       "Write",
+
       "Bash(git status:*)",
       "Bash(git diff:*)",
       "Bash(git log:*)",
       "Bash(git show:*)",
       "Bash(git ls-files:*)",
+      "Bash(git rev-parse:*)",
+      "Bash(git stash list)",
+      "Bash(git fetch:*)",
+
       "Bash(python3 -c:*)",
       "Bash(python3 -m py_compile:*)",
       "Bash(python3 -m pytest:*)",
+      "Bash(python3 -m pip install -e .)",
+      "Bash(python3 -m pip install -e \".[dev]\")",
+      "Bash(/tmp/khv/bin/python:*)",
+      "Bash(/tmp/khv/bin/pip:*)",
+      "Bash(/tmp/khv/bin/python -m pytest:*)",
       "Bash(ruff:*)",
       "Bash(uv pip install:*)",
       "Bash(pip install -e .)",
+      "Bash(pip install -e \".[dev]\")",
+
       "Bash(ls:*)",
       "Bash(cat pyproject.toml)",
+      "Bash(wc -l:*)",
       "Bash(katapult-helper --help)",
-      "Bash(katapult-helper * --help)"
+      "Bash(katapult-helper * --help)",
+
+      "Bash(ssh pi@192.168.50.95:*)",
+      "Bash(ssh pi@192.168.30.77:*)"
     ],
     "deny": [
-      "Bash(sudo systemctl:*)",
+      "Bash(sudo systemctl stop:*)",
+      "Bash(sudo systemctl start:*)",
+      "Bash(sudo systemctl restart:*)",
       "Bash(make flash:*)",
-      "Bash(rm -rf:*)"
+      "Bash(rm -rf:*)",
+
+      "Bash(ssh pi@* sudo systemctl stop:*)",
+      "Bash(ssh pi@* sudo systemctl start:*)",
+      "Bash(ssh pi@* make flash:*)",
+      "Bash(ssh pi@* python3 *flashtool.py *-f *)"
     ]
   }
 }

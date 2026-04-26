@@ -13,11 +13,14 @@ katapult-helper/
 ├── LICENSE
 ├── pyproject.toml          # hatch backend, packages = ["katapult_helper"]
 ├── inventory.example.yaml  # committed; inventory.yaml is gitignored
+├── tests/                  # pytest suite (~50 tests, no hardware required)
+│   └── fixtures/           # verbatim live captures from real flashtool.py -q
 └── katapult_helper/
     ├── __init__.py
+    ├── _proc.py            # shared run() wrapper, klipper_stopped() context mgr, BY_ID, is_katapult_mode
     ├── cli.py              # click group + commands: list, discover, configure, build, flash, run, wizard
-    ├── inventory.py        # ruamel.yaml round-trip; Board / Inventory dataclasses; load_raw / save_raw / upsert_board
-    ├── discover.py         # /dev/serial/by-id parser + flashtool.py -q wrapper
+    ├── inventory.py        # ruamel.yaml round-trip; Board / Inventory; InventoryError; load_raw / save_raw / upsert_board
+    ├── discover.py         # /dev/serial/by-id parser + flashtool.py -q wrapper (parse_can_query_output)
     ├── configure.py        # menuconfig walkthrough w/ MCU-family hint panel
     ├── build.py            # make clean → olddefconfig|menuconfig → make -j with KCONFIG_CONFIG
     ├── flash.py            # USB by-id resolution + flashtool.py invocation
@@ -26,22 +29,25 @@ katapult-helper/
 
 ## Tech stack
 
-- Python ≥ 3.11. Use modern stdlib (`tomllib`, `Path`, `match` where it helps).
-- **click** for the CLI (groups, `pass_context`, `type=click.Path(path_type=Path)`).
+- **Python ≥ 3.9** is the floor — RaspberryPi OS Bullseye/Bookworm ships 3.9.2, and Klipper installs use it. Don't introduce 3.10+ syntax (PEP 604 unions, PEP 634 match) at runtime — only in annotations, which `from __future__ import annotations` (required at the top of every `.py` file) stringifies.
+- **click** for the CLI (groups, `pass_context`, `type=click.Path(path_type=Path)`). User-facing failures use `click.ClickException` / `click.UsageError`, never raw tracebacks.
 - **loguru** for logging (single `logger.add(sys.stderr, ...)` in `cli._configure_logging`).
 - **ruamel.yaml** in default (round-trip) mode — preserves comments when the wizard appends entries.
 - **rich** for tables (`list`, `discover`) and panels (`configure` walkthrough).
 - **No** `python-can`, no `pyyaml`, no `pydantic` — keep deps small.
+- Dev: `pip install -e ".[dev]"` adds `pytest`. `pip` ≥ 21.3 required for editable installs from a pure-`pyproject.toml` package; older RpiOS pip needs `python -m pip install --upgrade pip` first.
 
 ## Non-obvious invariants (don't break these)
 
 1. **Stable identity is the chip UID, not the by-id path.** The `/dev/serial/by-id/*` symlink prefix flips between `usb-katapult_*` and `usb-Klipper_*` when an MCU reboots. Inventory keys USB boards by `chip_uid` and resolves the live path at flash time via `flash.resolve_usb_path`. Never store the full by-id path as the primary key.
 2. **Klipper builds are in-tree.** `.config` and `out/` live at the repo root; the Makefile has no `O=` override. We isolate per-board state by passing `KCONFIG_CONFIG=<path>` so the in-tree `.config` is never mutated. RP2040 + Katapult emits `out/klipper.bin` (not `.uf2`) — Katapult flashes the `.bin`.
 3. **Sequential build → flash.** Don't try to parallelize. If the user ever asks for parallelism, do it via `git worktree add` per board, not by trying to multiplex the in-tree build.
-4. **`klipper.service` lifecycle is bracketed once.** Stop at the start of any flash-touching command, restart in `finally:` at the end of the whole batch — never per board. The `wizard` and `flash` and `run` commands all follow this; the helper is `_systemctl` in `cli.py`.
-5. **Subprocess-only contract with `flashtool.py` and `make`.** Don't import Katapult internals — that file is not a package and has no version pinning. CLI invocation tracks upstream releases. stdout/stderr stream straight to the terminal (no capture) so menuconfig and progress bars Just Work.
+4. **`klipper.service` lifecycle is bracketed once.** Stop at the start of any flash-touching command, restart in `finally:` at the end of the whole batch — never per board. The `wizard`, `flash`, and `run` commands all use `with klipper_stopped(): …` from `_proc.py`. `_systemctl_stop` uses `sudo -n` (non-interactive) and raises `click.ClickException` with NOPASSWD-sudoers instructions if the stop fails — silently ignoring the failure leads to "device already in use" from flashtool.py. `_systemctl_start` is best-effort (runs in `finally`, so a failed start is logged as a warning, not raised).
+5. **Subprocess-only contract with `flashtool.py` and `make`.** Don't import Katapult internals — that file is not a package and has no version pinning. CLI invocation tracks upstream releases. stdout/stderr stream straight to the terminal (no capture) so menuconfig and progress bars Just Work. **All `subprocess.CalledProcessError` from `make`/`flashtool.py` is caught at module boundaries (`build_board`, `flash_board`) and translated into `click.ClickException` with hint text** — users see an actionable message, not a stack trace. Don't bypass this.
 6. **`make olddefconfig`, never `make defconfig` against an existing file.** When `.config` exists, `build.py` runs `olddefconfig` (validates + fills defaults, preserves user choices). Only `configure` may invoke `menuconfig`.
 7. **Inventory round-trip.** When the wizard adds a discovered MCU, it loads via `load_raw` → mutates via `upsert_board` → writes via `save_raw`. This preserves the user's comments and ordering. Don't switch the YAML loader to `safe` mode for writes.
+8. **All `cli.py` commands route through `_load(ctx)`,** which translates `InventoryError` → `click.UsageError` for malformed YAML. The `wizard` command also passes the loaded `Inventory` into `run_wizard(inv=…)` to avoid a second parse. New commands must follow this — never call `load_inventory` directly from a click handler.
+9. **`build_inventory` rejects null/empty `klipper_repo`.** A YAML value like `klipper_repo: ~` parses as `None`, which would otherwise produce `Path("None")` and explode later. The check is `not raw.get("klipper_repo")`; don't loosen it.
 
 ## Commands
 
@@ -56,8 +62,9 @@ Entry point is `katapult-helper` (defined in `pyproject.toml [project.scripts]`)
 
 - All paths use `Path` and `.expanduser()` at the I/O boundary; internal code assumes already-expanded paths.
 - Logging style: `logger.info("[{}] doing thing", board.name)` so every line is greppable by board.
-- Don't write tests that mock `subprocess.run` against `make` or `flashtool.py` — the contract is the actual command-line, and mocks drift. If we add tests, target `inventory.py` (load/save/upsert) and the regex parsers in `discover.py`.
+- Tests live under `tests/`. Real-output captures (live `flashtool.py -q` stdout) live under `tests/fixtures/` and are checked in — they pin our regex against actual upstream behavior. **Don't mock `subprocess.run` against `make` or `flashtool.py`** — the contract is the CLI invocation, and mocks drift. Mock at the module-boundary helpers (`build.run`, `flash.run`) when testing the error-translation paths, but never to fake make output. Target `inventory.py` (load/save/upsert), the regex parsers in `discover.py`, and the CalledProcessError → ClickException translations in `build.py` / `flash.py`. Use `click.testing.CliRunner` for CLI-level error UX (no Traceback, friendly message).
 - Keep CLI commands thin; logic lives in module-level functions so tests can call them without invoking click.
+- Every `.py` file under `katapult_helper/` and `tests/` starts with `from __future__ import annotations`. This is required for 3.9 compatibility of `X | None` annotations.
 
 ## Things to avoid
 
@@ -72,3 +79,10 @@ Entry point is `katapult-helper` (defined in `pyproject.toml [project.scripts]`)
 - `~/git/3d-printing-guides/docs/katapult-firmware-guide.md` — the user's existing manual workflow doc; informed the inventory schema.
 - `~/git/klipper-setup-scripts` — host-side setup automation (dialout group, ModemManager disable, dfu-util install). katapult-helper assumes this has been run.
 - Upstream `Arksine/katapult` is **not** cloned locally; CI/dev should treat it as an external dependency at the path in `inventory.yaml#katapult_repo`.
+
+## Live hardware (for validation, not for casual testing)
+
+- `pi@192.168.50.95` — doomcube Pi. Two USB-attached MCUs (stm32f042x6 expansion board, stm32g0b1xx). Klipper installed at `/home/pi/klipper`, Katapult at `/home/pi/katapult`. katapult-helper installed at `/home/pi/katapult-helper` in a venv at `.venv/`. Has NOPASSWD sudoers configured for systemctl. Real Python 3.9.2 — use this Pi to verify 3.9 compat.
+- `pi@192.168.30.77` — Vcore Pi. Live `can0` with an EBB36 toolhead (UUID `1586f2c37eaf`). Useful for live `flashtool.py -q` validation, but be aware: sending `-r` to the EBB36 enters Katapult mode without an auto-return — only re-flash or power-cycle brings it back.
+
+When validating against either Pi, default to **read-only** operations. State changes (`-r`, `make flash`, systemctl restart) need explicit per-session authorization from the user.
