@@ -11,10 +11,17 @@ from rich.prompt import Confirm, Prompt
 
 from ._proc import klipper_stopped
 from .build import build_board
-from .configure import configure_all_missing, configure_board, ensure_make_available
+from .configure import configure_all_missing, ensure_make_available
 from .discover import discover_can, discover_usb
 from .flash import flash_board
-from .inventory import Inventory, load_inventory, load_raw, save_raw, upsert_board
+from .inventory import (
+    Inventory,
+    build_inventory,
+    load_inventory,
+    load_raw,
+    save_raw,
+    upsert_board,
+)
 
 console = Console()
 
@@ -28,9 +35,19 @@ def _default_config_path(name: str) -> str:
     return f"~/printer_data/firmware_configs/{name.replace('-', '_')}.config"
 
 
-def _reconcile_inventory(inventory_path: Path, inv: Inventory) -> bool:
+def _ask_nonempty(prompt: str, field: str, *, default: str | None = None) -> str:
+    """Like Prompt.ask but reprompts on empty/whitespace input instead of aborting."""
+    while True:
+        kwargs = {"default": default} if default is not None else {}
+        value = Prompt.ask(prompt, **kwargs).strip()
+        if value:
+            return value
+        logger.warning("{} cannot be empty; please try again", field)
+
+
+def _reconcile_inventory(inventory_path: Path, inv: Inventory) -> Inventory:
     """Discover MCUs and prompt the user to add unknown ones to inventory.yaml.
-    Returns True if the inventory file was modified."""
+    Returns the (possibly updated) Inventory; persists to disk if changed."""
     raw = load_raw(inventory_path)
     changed = False
 
@@ -60,8 +77,12 @@ def _reconcile_inventory(inventory_path: Path, inv: Inventory) -> bool:
         if not Confirm.ask("Add this MCU to inventory?", default=True):
             continue
         suggested = _suggest_name(d.product, d.mcu_family, d.chip_uid)
-        name = Prompt.ask("Friendly name", default=suggested)
-        cfg = Prompt.ask("Path to .config (will be created)", default=_default_config_path(name))
+        name = _ask_nonempty("Friendly name", "name", default=suggested)
+        cfg = _ask_nonempty(
+            "Path to .config (will be created)",
+            "klipper_config",
+            default=_default_config_path(name),
+        )
         if upsert_board(
             raw, name,
             transport="usb",
@@ -86,11 +107,15 @@ def _reconcile_inventory(inventory_path: Path, inv: Inventory) -> bool:
         if not Confirm.ask("Add this MCU to inventory?", default=True):
             continue
         suggested = f"can-{c.uuid[-6:]}"
-        name = Prompt.ask("Friendly name", default=suggested)
-        family = Prompt.ask(
-            "MCU family (e.g. stm32g0b1xx, rp2040)", default="stm32g0b1xx"
+        name = _ask_nonempty("Friendly name", "name", default=suggested)
+        family = _ask_nonempty(
+            "MCU family (e.g. stm32g0b1xx, rp2040)", "mcu_family", default="stm32g0b1xx",
         )
-        cfg = Prompt.ask("Path to .config (will be created)", default=_default_config_path(name))
+        cfg = _ask_nonempty(
+            "Path to .config (will be created)",
+            "klipper_config",
+            default=_default_config_path(name),
+        )
         if upsert_board(
             raw, name,
             transport="can",
@@ -105,7 +130,8 @@ def _reconcile_inventory(inventory_path: Path, inv: Inventory) -> bool:
     if changed:
         save_raw(inventory_path, raw)
         logger.success("inventory updated: {}", inventory_path)
-    return changed
+        return build_inventory(raw)
+    return inv
 
 
 def run_wizard(inventory_path: Path, *, do_flash: bool) -> None:
@@ -115,8 +141,7 @@ def run_wizard(inventory_path: Path, *, do_flash: bool) -> None:
     logger.info("klipper repo: {} ({})", inv.klipper_repo, inv.repo_kind)
     logger.info("katapult repo: {}", inv.katapult_repo)
 
-    if _reconcile_inventory(inventory_path, inv):
-        inv = load_inventory(inventory_path)
+    inv = _reconcile_inventory(inventory_path, inv)
 
     if not inv.boards:
         logger.warning("inventory is empty; nothing to do")

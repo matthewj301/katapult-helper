@@ -14,6 +14,12 @@ USB_NAME_RE = re.compile(
     r"usb-(?P<product>[^_]+)_(?P<mcu>[^_]+)_(?P<uid>[0-9A-Fa-f]+)-if\d+"
 )
 
+# Per Katapult's flashtool.py:723, each query response is printed verbatim as:
+#     Detected UUID: <12 lowercase hex>, Application: <Klipper|Katapult|Unknown>
+CAN_QUERY_LINE_RE = re.compile(
+    r"^Detected UUID:\s*(?P<uuid>[0-9a-f]{12}),\s*Application:\s*(?P<app>\S+)\s*$"
+)
+
 
 @dataclass
 class DiscoveredUsb:
@@ -47,25 +53,38 @@ def discover_usb() -> list[DiscoveredUsb]:
     return found
 
 
-def discover_can(inv: Inventory, iface: str = "can0") -> list[DiscoveredCan]:
+def parse_can_query_output(stdout: str, iface: str) -> list[DiscoveredCan]:
+    found: list[DiscoveredCan] = []
+    for line in stdout.splitlines():
+        m = CAN_QUERY_LINE_RE.match(line.strip())
+        if m:
+            found.append(DiscoveredCan(
+                uuid=m.group("uuid"), application=m.group("app"), iface=iface,
+            ))
+    return found
+
+
+def query_can_raw(inv: Inventory, iface: str = "can0") -> str | None:
+    """Run `flashtool.py -i <iface> -q` and return its stdout, or None if skipped."""
     if not can_iface_present(iface):
         logger.debug("CAN interface {} not present; skipping CAN discovery", iface)
-        return []
+        return None
     if not inv.flashtool.exists():
         logger.warning("flashtool not found at {}; skipping CAN discovery", inv.flashtool)
-        return []
+        return None
     try:
         result = subprocess.run(
-            ["python3", str(inv.flashtool), "-i", iface, "-q"],
+            [str(inv.flashtool), "-i", iface, "-q"],
             capture_output=True, text=True, check=False, timeout=10,
         )
     except (subprocess.TimeoutExpired, FileNotFoundError) as e:
         logger.warning("CAN discovery failed: {}", e)
+        return None
+    return result.stdout
+
+
+def discover_can(inv: Inventory, iface: str = "can0") -> list[DiscoveredCan]:
+    stdout = query_can_raw(inv, iface)
+    if stdout is None:
         return []
-    found: list[DiscoveredCan] = []
-    for line in result.stdout.splitlines():
-        line = line.strip()
-        m = re.search(r"UUID:\s*([0-9a-fA-F]+).*?Application:\s*(\S+)", line)
-        if m:
-            found.append(DiscoveredCan(uuid=m.group(1), application=m.group(2), iface=iface))
-    return found
+    return parse_can_query_output(stdout, iface)

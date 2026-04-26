@@ -70,22 +70,37 @@ def save_raw(path: Path, data: dict) -> None:
         _yaml.dump(data, f)
 
 
-def load_inventory(path: Path) -> Inventory:
-    raw = load_raw(path)
-    klipper_repo = Path(raw["klipper_repo"]).expanduser()
-    katapult_repo = Path(raw.get("katapult_repo", "~/katapult")).expanduser()
+def _str_or_none(v: object) -> str | None:
+    if v is None or v == "":
+        return None
+    return str(v)
+
+
+def build_inventory(raw: dict) -> Inventory:
+    """Construct an Inventory from a parsed (or in-memory mutated) YAML dict.
+
+    All string-typed fields are coerced via str() so that unquoted YAML values
+    that ruamel parses as int (e.g. chip_uid: 1234567890) still arrive as the
+    canonical string form Board expects.
+    """
+    klipper_repo = Path(str(raw["klipper_repo"])).expanduser()
+    katapult_repo = Path(str(raw.get("katapult_repo", "~/katapult"))).expanduser()
     boards: dict[str, Board] = {}
     for name, entry in (raw.get("boards") or {}).items():
-        boards[name] = Board(
-            name=name,
-            transport=entry["transport"],
-            klipper_config=Path(entry["klipper_config"]).expanduser(),
-            chip_uid=entry.get("chip_uid"),
-            mcu_family=entry.get("mcu_family"),
-            can_iface=entry.get("can_iface", "can0"),
-            canbus_uuid=entry.get("canbus_uuid"),
+        boards[str(name)] = Board(
+            name=str(name),
+            transport=str(entry["transport"]),  # type: ignore[arg-type]
+            klipper_config=Path(str(entry["klipper_config"])).expanduser(),
+            chip_uid=_str_or_none(entry.get("chip_uid")),
+            mcu_family=_str_or_none(entry.get("mcu_family")),
+            can_iface=str(entry.get("can_iface", "can0")),
+            canbus_uuid=_str_or_none(entry.get("canbus_uuid")),
         )
     return Inventory(klipper_repo=klipper_repo, katapult_repo=katapult_repo, boards=boards)
+
+
+def load_inventory(path: Path) -> Inventory:
+    return build_inventory(load_raw(path))
 
 
 def upsert_board(
@@ -100,18 +115,30 @@ def upsert_board(
     canbus_uuid: str | None = None,
 ) -> bool:
     """Add or update a board entry in a round-trip-loaded YAML dict.
-    Returns True if anything changed."""
+    Returns True if anything changed.
+
+    Required fields are validated up-front so we never write a YAML file that
+    will fail Board.__post_init__ on the next load.
+    """
+    if transport == "usb" and not chip_uid:
+        raise ValueError(f"board {name!r}: usb transport requires a non-empty chip_uid")
+    if transport == "can" and not canbus_uuid:
+        raise ValueError(f"board {name!r}: can transport requires a non-empty canbus_uuid")
+
     boards = raw.setdefault("boards", {})
-    existing = boards.get(name) or {}
-    new = {"transport": transport, "klipper_config": klipper_config}
+    new: dict[str, str] = {"transport": transport, "klipper_config": klipper_config}
     if mcu_family:
         new["mcu_family"] = mcu_family
     if transport == "usb":
-        new["chip_uid"] = chip_uid or ""
+        assert chip_uid  # validated above
+        new["chip_uid"] = chip_uid
     else:
+        assert canbus_uuid  # validated above
         new["can_iface"] = can_iface or "can0"
-        new["canbus_uuid"] = canbus_uuid or ""
-    if dict(existing) == new:
+        new["canbus_uuid"] = canbus_uuid
+
+    existing = {str(k): str(v) for k, v in (boards.get(name) or {}).items()}
+    if existing == new:
         return False
     boards[name] = new
     return True

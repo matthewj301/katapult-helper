@@ -11,7 +11,7 @@ from rich.table import Table
 from ._proc import klipper_stopped
 from .build import build_board
 from .configure import configure_all_missing, configure_board, ensure_make_available
-from .discover import discover_can, discover_usb
+from .discover import discover_can, discover_usb, query_can_raw
 from .flash import flash_board
 from .inventory import load_inventory
 from .wizard import run_wizard
@@ -58,10 +58,17 @@ def list_boards(ctx: click.Context) -> None:
 
 
 @cli.command()
+@click.option("--raw", is_flag=True,
+              help="Print raw flashtool.py -q stdout instead of the parsed table.")
+@click.option("--can-iface", default="can0", show_default=True)
 @click.pass_context
-def discover(ctx: click.Context) -> None:
+def discover(ctx: click.Context, raw: bool, can_iface: str) -> None:
     """Scan /dev/serial/by-id and CAN bus for MCUs."""
     inv = load_inventory(ctx.obj["inventory_path"])
+    if raw:
+        stdout = query_can_raw(inv, can_iface)
+        click.echo(stdout if stdout is not None else "(CAN discovery skipped)")
+        return
     usb = discover_usb()
     table = Table(title="USB devices (/dev/serial/by-id)")
     table.add_column("product")
@@ -71,7 +78,7 @@ def discover(ctx: click.Context) -> None:
     for d in usb:
         table.add_row(d.product, d.mcu_family, d.chip_uid, d.by_id.name)
     console.print(table)
-    can = discover_can(inv)
+    can = discover_can(inv, can_iface)
     table = Table(title="CAN devices")
     table.add_column("iface"); table.add_column("uuid"); table.add_column("application")
     for c in can:
