@@ -76,6 +76,10 @@ def _str_or_none(v: object) -> str | None:
     return str(v)
 
 
+class InventoryError(ValueError):
+    """Raised for malformed or incomplete inventory YAML."""
+
+
 def build_inventory(raw: dict) -> Inventory:
     """Construct an Inventory from a parsed (or in-memory mutated) YAML dict.
 
@@ -83,6 +87,11 @@ def build_inventory(raw: dict) -> Inventory:
     that ruamel parses as int (e.g. chip_uid: 1234567890) still arrive as the
     canonical string form Board expects.
     """
+    if not isinstance(raw, dict) or not raw.get("klipper_repo"):
+        raise InventoryError(
+            "inventory.yaml must define a non-empty top-level `klipper_repo` "
+            "(path to the Klipper or Kalico checkout to build firmware in)"
+        )
     klipper_repo = Path(str(raw["klipper_repo"])).expanduser()
     katapult_repo = Path(str(raw.get("katapult_repo", "~/katapult"))).expanduser()
     boards: dict[str, Board] = {}

@@ -134,9 +134,19 @@ def _reconcile_inventory(inventory_path: Path, inv: Inventory) -> Inventory:
     return inv
 
 
-def run_wizard(inventory_path: Path, *, do_flash: bool) -> None:
-    """End-to-end flow: discover -> upsert -> configure missing -> build -> flash."""
-    inv = load_inventory(inventory_path)
+def run_wizard(
+    inventory_path: Path,
+    *,
+    do_flash: bool,
+    inv: Inventory | None = None,
+) -> None:
+    """End-to-end flow: discover -> upsert -> configure missing -> build -> flash.
+
+    If `inv` is provided, the caller has already validated/loaded it and we skip
+    the initial parse. Otherwise the file is loaded here.
+    """
+    if inv is None:
+        inv = load_inventory(inventory_path)
     ensure_make_available(inv)
     logger.info("klipper repo: {} ({})", inv.klipper_repo, inv.repo_kind)
     logger.info("katapult repo: {}", inv.katapult_repo)

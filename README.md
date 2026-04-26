@@ -80,7 +80,7 @@ boards:
 |---|---|
 | `katapult-helper wizard` | Full pipeline: discover → upsert → configure → build → flash. |
 | `katapult-helper list` | Print the current inventory as a table. |
-| `katapult-helper discover` | Scan USB and CAN; show a table of what's currently visible. |
+| `katapult-helper discover [--raw] [--can-iface IFACE]` | Scan USB and CAN; show a table of what's currently visible. `--raw` prints the unparsed `flashtool.py -q` stdout instead — useful for verifying upstream output format hasn't drifted. |
 | `katapult-helper configure [NAMES…] [--all-missing] [--force]` | Walk through `make menuconfig` for selected boards. Shows MCU-family hints (bootloader offset, recommended interface) before launching. |
 | `katapult-helper build [NAMES…] [--menuconfig]` | Build firmware for one or more boards. Auto-runs menuconfig if `.config` is missing. |
 | `katapult-helper flash [NAMES…] [-f path/to/klipper.bin]` | Flash without rebuilding. Stops/starts klipper.service around the run. |
@@ -113,9 +113,19 @@ These are guidance shown before menuconfig launches — menuconfig still drives 
 - **No silent flag-flipping in `.config`.** When `.config` already exists, `build` runs `make olddefconfig` (validates and fills defaults, never overrides your choices).
 - **CAN discovery uses the upstream tool** (`flashtool.py -i can0 -q`) so we inherit whatever protocol Katapult ships with.
 
+## Development
+
+```bash
+pip install -e ".[dev]"
+pytest                        # ~40 unit tests, no hardware required
+pytest tests/test_discover.py # parser + regex against real flashtool.py captures
+```
+
+The test suite is intentionally light on subprocess mocking — the contract with `make` and `flashtool.py` *is* the CLI, so we test the parsers, the inventory round-trip, and the by-id resolution logic in isolation. Real-output fixtures live in `tests/fixtures/`.
+
 ## Status
 
-Early — not yet exercised against a real fleet. Likely rough edges around CAN UUID parsing (the regex matches the upstream `flashtool.py -q` output as observed at the time of writing, but newer formats may differ) and around `sudo systemctl` semantics on non-systemd hosts.
+Early but exercised. CAN UUID parsing has been validated against live `flashtool.py -q` output from a Vcore Pi with an EBB36 in Katapult bootloader mode (stm32g0b1xx), and the USB by-id regex against stm32f042x6 / stm32g0b1xx / stm32h723xx hosts. `sudo systemctl` semantics assume systemd; non-systemd hosts will need to plumb their own service control.
 
 ## License
 

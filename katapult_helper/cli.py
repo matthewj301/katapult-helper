@@ -13,8 +13,15 @@ from .build import build_board
 from .configure import configure_all_missing, configure_board, ensure_make_available
 from .discover import discover_can, discover_usb, query_can_raw
 from .flash import flash_board
-from .inventory import load_inventory
+from .inventory import InventoryError, Inventory, load_inventory
 from .wizard import run_wizard
+
+
+def _load(ctx: click.Context) -> Inventory:
+    try:
+        return load_inventory(ctx.obj["inventory_path"])
+    except InventoryError as e:
+        raise click.UsageError(str(e))
 
 console = Console()
 
@@ -44,7 +51,7 @@ def cli(ctx: click.Context, inventory_path: Path, verbose: bool) -> None:
 @click.pass_context
 def list_boards(ctx: click.Context) -> None:
     """List boards defined in the inventory."""
-    inv = load_inventory(ctx.obj["inventory_path"])
+    inv = _load(ctx)
     logger.info("klipper repo: {} ({})", inv.klipper_repo, inv.repo_kind)
     table = Table(title=f"Boards ({len(inv.boards)})")
     table.add_column("name", style="bold")
@@ -64,7 +71,7 @@ def list_boards(ctx: click.Context) -> None:
 @click.pass_context
 def discover(ctx: click.Context, raw: bool, can_iface: str) -> None:
     """Scan /dev/serial/by-id and CAN bus for MCUs."""
-    inv = load_inventory(ctx.obj["inventory_path"])
+    inv = _load(ctx)
     if raw:
         stdout = query_can_raw(inv, can_iface)
         click.echo(stdout if stdout is not None else "(CAN discovery skipped)")
@@ -95,7 +102,7 @@ def discover(ctx: click.Context, raw: bool, can_iface: str) -> None:
 @click.pass_context
 def configure(ctx: click.Context, names: tuple[str, ...], all_missing: bool, force: bool) -> None:
     """Walk through `make menuconfig` for one or more boards to create/edit their .config files."""
-    inv = load_inventory(ctx.obj["inventory_path"])
+    inv = _load(ctx)
     ensure_make_available(inv)
     logger.info("klipper repo: {} ({})", inv.klipper_repo, inv.repo_kind)
     if all_missing and names:
@@ -115,7 +122,7 @@ def configure(ctx: click.Context, names: tuple[str, ...], all_missing: bool, for
 @click.pass_context
 def build(ctx: click.Context, names: tuple[str, ...], menuconfig: bool) -> None:
     """Build firmware for one or more boards (or all if none given)."""
-    inv = load_inventory(ctx.obj["inventory_path"])
+    inv = _load(ctx)
     logger.info("building in {} ({})", inv.klipper_repo, inv.repo_kind)
     boards = inv.select(names)
     for board in boards:
@@ -129,7 +136,7 @@ def build(ctx: click.Context, names: tuple[str, ...], menuconfig: bool) -> None:
 @click.pass_context
 def flash(ctx: click.Context, names: tuple[str, ...], firmware: Path | None) -> None:
     """Flash firmware to one or more boards. Does not rebuild."""
-    inv = load_inventory(ctx.obj["inventory_path"])
+    inv = _load(ctx)
     boards = inv.select(names)
     fw = firmware or inv.klipper_bin
     if not fw.exists():
@@ -145,7 +152,7 @@ def flash(ctx: click.Context, names: tuple[str, ...], firmware: Path | None) -> 
 @click.pass_context
 def run(ctx: click.Context, names: tuple[str, ...], menuconfig: bool) -> None:
     """Full pipeline: build then flash, board-by-board. Klipper restarts once at end."""
-    inv = load_inventory(ctx.obj["inventory_path"])
+    inv = _load(ctx)
     logger.info("klipper repo: {} ({})", inv.klipper_repo, inv.repo_kind)
     boards = inv.select(names)
     with klipper_stopped():
@@ -162,7 +169,8 @@ def wizard(ctx: click.Context, no_flash: bool) -> None:
     """One-shot, end-to-end: discover unknown MCUs, add them to inventory,
     walk through menuconfig for any missing .config, build, then flash all.
     Stops klipper.service once at start and restarts it once at the end."""
-    run_wizard(ctx.obj["inventory_path"], do_flash=not no_flash)
+    inv = _load(ctx)
+    run_wizard(ctx.obj["inventory_path"], do_flash=not no_flash, inv=inv)
 
 
 if __name__ == "__main__":

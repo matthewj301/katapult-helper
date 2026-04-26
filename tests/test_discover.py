@@ -1,10 +1,14 @@
 from __future__ import annotations
 
+from pathlib import Path
+
 from katapult_helper.discover import (
     CAN_QUERY_LINE_RE,
     USB_NAME_RE,
     parse_can_query_output,
 )
+
+FIXTURES = Path(__file__).parent / "fixtures"
 
 
 def test_usb_name_matches_klipper_app_mode() -> None:
@@ -74,3 +78,22 @@ def test_can_query_uppercase_hex_rejected() -> None:
     assert CAN_QUERY_LINE_RE.match(
         "Detected UUID: ABCDEF012345, Application: Klipper"
     ) is None
+
+
+def test_can_query_real_capture_katapult_mode() -> None:
+    """Captured live from `flashtool.py -i can0 -q` against an stm32g0b1xx EBB36
+    in Katapult bootloader mode (Vcore Pi, 2026-04-26). If this test ever fails,
+    upstream Katapult changed its print format and our regex needs updating."""
+    stdout = (FIXTURES / "flashtool_q_katapult.txt").read_text()
+    found = parse_can_query_output(stdout, "can0")
+    assert len(found) == 1
+    assert found[0].uuid == "1586f2c37eaf"
+    assert found[0].application == "Katapult"
+    assert found[0].iface == "can0"
+
+
+def test_can_query_real_capture_empty_bus() -> None:
+    """Captured live from `flashtool.py -i can0 -q` against a CAN bus with no
+    nodes in Katapult mode (everything running Klipper app)."""
+    stdout = (FIXTURES / "flashtool_q_empty.txt").read_text()
+    assert parse_can_query_output(stdout, "can0") == []

@@ -6,6 +6,7 @@ import pytest
 
 from katapult_helper.inventory import (
     Board,
+    InventoryError,
     build_inventory,
     load_inventory,
     load_raw,
@@ -181,6 +182,35 @@ def test_build_inventory_treats_empty_string_as_missing() -> None:
     }
     inv = build_inventory(raw)
     assert inv.boards["x"].mcu_family is None
+
+
+def test_build_inventory_missing_klipper_repo_raises_inventory_error() -> None:
+    with pytest.raises(InventoryError, match="`klipper_repo`"):
+        build_inventory({"boards": {}})
+
+
+def test_build_inventory_non_dict_raises_inventory_error() -> None:
+    with pytest.raises(InventoryError):
+        build_inventory("not a dict")  # type: ignore[arg-type]
+
+
+def test_build_inventory_empty_yaml_raises_inventory_error() -> None:
+    """Empty file or all-comments YAML loads as None via ruamel."""
+    with pytest.raises(InventoryError):
+        build_inventory(None)  # type: ignore[arg-type]
+
+
+def test_build_inventory_null_klipper_repo_raises_inventory_error() -> None:
+    """`klipper_repo: ~` (or bare `klipper_repo:`) loads as {'klipper_repo': None}.
+    Must be caught — silently producing Path('None') would create a confusing error
+    later when make/flashtool look for the directory."""
+    with pytest.raises(InventoryError, match="non-empty top-level `klipper_repo`"):
+        build_inventory({"klipper_repo": None})
+
+
+def test_build_inventory_empty_string_klipper_repo_raises_inventory_error() -> None:
+    with pytest.raises(InventoryError, match="non-empty top-level `klipper_repo`"):
+        build_inventory({"klipper_repo": ""})
 
 
 def test_upsert_strips_legacy_empty_mcu_family(tmp_path: Path) -> None:
