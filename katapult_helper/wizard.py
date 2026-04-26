@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import contextlib
 from pathlib import Path
 
 import click
@@ -8,8 +9,9 @@ from rich.console import Console
 from rich.panel import Panel
 from rich.prompt import Confirm, Prompt
 
+from ._proc import klipper_stopped
 from .build import build_board
-from .configure import configure_board, ensure_make_available
+from .configure import configure_all_missing, configure_board, ensure_make_available
 from .discover import discover_can, discover_usb
 from .flash import flash_board
 from .inventory import Inventory, load_inventory, load_raw, save_raw, upsert_board
@@ -106,14 +108,8 @@ def _reconcile_inventory(inventory_path: Path, inv: Inventory) -> bool:
     return changed
 
 
-def run_wizard(
-    inventory_path: Path,
-    *,
-    do_flash: bool,
-    stop_klipper_fn,
-    start_klipper_fn,
-) -> None:
-    """End-to-end flow: discover → upsert → configure missing → build → flash."""
+def run_wizard(inventory_path: Path, *, do_flash: bool) -> None:
+    """End-to-end flow: discover -> upsert -> configure missing -> build -> flash."""
     inv = load_inventory(inventory_path)
     ensure_make_available(inv)
     logger.info("klipper repo: {} ({})", inv.klipper_repo, inv.repo_kind)
@@ -135,23 +131,16 @@ def run_wizard(
     if not Confirm.ask("Proceed?", default=True):
         raise click.Abort()
 
-    for board in inv.boards.values():
-        cfg = board.klipper_config.expanduser()
-        if not cfg.exists():
-            configure_board(inv, board, force=True)
+    configure_all_missing(inv)
 
-    if do_flash:
-        stop_klipper_fn()
-    try:
+    bracket = klipper_stopped() if do_flash else contextlib.nullcontext()
+    with bracket:
         for board in inv.boards.values():
             firmware = build_board(inv, board, run_menuconfig=False)
             if do_flash:
                 flash_board(inv, board, firmware)
             else:
                 logger.info("[{}] skipping flash (--no-flash)", board.name)
-    finally:
-        if do_flash:
-            start_klipper_fn()
 
     console.print(Panel(
         "[bold green]Done.[/bold green] All boards configured, built, "

@@ -48,10 +48,6 @@ class Inventory:
         return self.klipper_repo / "out" / "klipper.bin"
 
     @property
-    def klipper_dict(self) -> Path:
-        return self.klipper_repo / "out" / "klipper.dict"
-
-    @property
     def flashtool(self) -> Path:
         return self.katapult_repo / "scripts" / "flashtool.py"
 

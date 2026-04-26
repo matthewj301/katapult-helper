@@ -1,20 +1,12 @@
 from __future__ import annotations
 
 import os
-import subprocess
 from pathlib import Path
 
 from loguru import logger
 
+from ._proc import run
 from .inventory import Board, Inventory
-
-
-def _run(cmd: list[str], cwd: Path, env: dict[str, str] | None = None) -> None:
-    logger.info("$ {} (cwd={})", " ".join(cmd), cwd)
-    full_env = os.environ.copy()
-    if env:
-        full_env.update(env)
-    subprocess.run(cmd, cwd=cwd, env=full_env, check=True)
 
 
 def build_board(inv: Inventory, board: Board, *, run_menuconfig: bool) -> Path:
@@ -26,16 +18,17 @@ def build_board(inv: Inventory, board: Board, *, run_menuconfig: bool) -> Path:
     logger.info("[{}] building in {} ({})", board.name, repo, inv.repo_kind)
     logger.info("[{}] using config {}", board.name, config_path)
 
-    _run(["make", "clean"], cwd=repo, env=env)
+    run(["make", "clean"], cwd=repo, env=env)
 
-    if run_menuconfig or not config_path.exists():
-        if not config_path.exists():
+    cfg_exists = config_path.exists()
+    if run_menuconfig or not cfg_exists:
+        if not cfg_exists:
             logger.warning("[{}] config not found; menuconfig will create it", board.name)
-        _run(["make", "menuconfig"], cwd=repo, env=env)
+        run(["make", "menuconfig"], cwd=repo, env=env)
     else:
-        _run(["make", "olddefconfig"], cwd=repo, env=env)
+        run(["make", "olddefconfig"], cwd=repo, env=env)
 
-    _run(["make", f"-j{os.cpu_count() or 1}"], cwd=repo, env=env)
+    run(["make", f"-j{os.cpu_count() or 1}"], cwd=repo, env=env)
 
     binary = inv.klipper_bin
     if not binary.exists():

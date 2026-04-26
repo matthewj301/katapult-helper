@@ -1,8 +1,6 @@
 from __future__ import annotations
 
-import os
 import shutil
-import subprocess
 from pathlib import Path
 
 import click
@@ -10,6 +8,7 @@ from loguru import logger
 from rich.console import Console
 from rich.panel import Panel
 
+from ._proc import run
 from .inventory import Board, Inventory
 
 console = Console()
@@ -104,10 +103,11 @@ def configure_board(inv: Inventory, board: Board, *, force: bool) -> Path:
     if not click.confirm("Launch menuconfig now?", default=True):
         raise click.Abort()
 
-    env = os.environ.copy()
-    env["KCONFIG_CONFIG"] = str(config_path)
-    logger.info("$ make menuconfig KCONFIG_CONFIG={} (cwd={})", config_path, inv.klipper_repo)
-    subprocess.run(["make", "menuconfig"], cwd=inv.klipper_repo, env=env, check=True)
+    run(
+        ["make", "menuconfig"],
+        cwd=inv.klipper_repo,
+        env={"KCONFIG_CONFIG": str(config_path)},
+    )
 
     if not config_path.exists():
         raise FileNotFoundError(

@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import subprocess
 import sys
 from pathlib import Path
 
@@ -9,6 +8,7 @@ from loguru import logger
 from rich.console import Console
 from rich.table import Table
 
+from ._proc import klipper_stopped
 from .build import build_board
 from .configure import configure_all_missing, configure_board, ensure_make_available
 from .discover import discover_can, discover_usb
@@ -127,12 +127,9 @@ def flash(ctx: click.Context, names: tuple[str, ...], firmware: Path | None) -> 
     fw = firmware or inv.klipper_bin
     if not fw.exists():
         raise click.UsageError(f"firmware not found: {fw} (run `build` first or pass --firmware)")
-    _stop_klipper()
-    try:
+    with klipper_stopped():
         for board in boards:
             flash_board(inv, board, fw)
-    finally:
-        _start_klipper()
 
 
 @cli.command()
@@ -144,13 +141,10 @@ def run(ctx: click.Context, names: tuple[str, ...], menuconfig: bool) -> None:
     inv = load_inventory(ctx.obj["inventory_path"])
     logger.info("klipper repo: {} ({})", inv.klipper_repo, inv.repo_kind)
     boards = inv.select(names)
-    _stop_klipper()
-    try:
+    with klipper_stopped():
         for board in boards:
             firmware = build_board(inv, board, run_menuconfig=menuconfig)
             flash_board(inv, board, firmware)
-    finally:
-        _start_klipper()
 
 
 @cli.command()
@@ -161,28 +155,7 @@ def wizard(ctx: click.Context, no_flash: bool) -> None:
     """One-shot, end-to-end: discover unknown MCUs, add them to inventory,
     walk through menuconfig for any missing .config, build, then flash all.
     Stops klipper.service once at start and restarts it once at the end."""
-    run_wizard(
-        ctx.obj["inventory_path"],
-        do_flash=not no_flash,
-        stop_klipper_fn=_stop_klipper,
-        start_klipper_fn=_start_klipper,
-    )
-
-
-def _systemctl(action: str, unit: str = "klipper") -> None:
-    cmd = ["sudo", "systemctl", action, unit]
-    logger.info("$ {}", " ".join(cmd))
-    result = subprocess.run(cmd, check=False)
-    if result.returncode != 0:
-        logger.warning("systemctl {} {} returned {}", action, unit, result.returncode)
-
-
-def _stop_klipper() -> None:
-    _systemctl("stop")
-
-
-def _start_klipper() -> None:
-    _systemctl("start")
+    run_wizard(ctx.obj["inventory_path"], do_flash=not no_flash)
 
 
 if __name__ == "__main__":

@@ -7,9 +7,9 @@ from pathlib import Path
 
 from loguru import logger
 
+from ._proc import BY_ID, can_iface_present
 from .inventory import Inventory
 
-BY_ID = Path("/dev/serial/by-id")
 USB_NAME_RE = re.compile(
     r"usb-(?P<product>[^_]+)_(?P<mcu>[^_]+)_(?P<uid>[0-9A-Fa-f]+)-if\d+"
 )
@@ -48,6 +48,9 @@ def discover_usb() -> list[DiscoveredUsb]:
 
 
 def discover_can(inv: Inventory, iface: str = "can0") -> list[DiscoveredCan]:
+    if not can_iface_present(iface):
+        logger.debug("CAN interface {} not present; skipping CAN discovery", iface)
+        return []
     if not inv.flashtool.exists():
         logger.warning("flashtool not found at {}; skipping CAN discovery", inv.flashtool)
         return []

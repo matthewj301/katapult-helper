@@ -1,20 +1,18 @@
 from __future__ import annotations
 
-import subprocess
 import time
 from pathlib import Path
 
 from loguru import logger
 
+from ._proc import BY_ID, is_katapult_mode, run
 from .inventory import Board, Inventory
-
-BY_ID = Path("/dev/serial/by-id")
 
 
 def resolve_usb_path(chip_uid: str) -> Path | None:
     if not BY_ID.exists():
         return None
-    matches = sorted(p for p in BY_ID.iterdir() if chip_uid in p.name)
+    matches = sorted(BY_ID.glob(f"*{chip_uid}*"))
     if not matches:
         return None
     for p in matches:
@@ -31,18 +29,13 @@ def wait_for_usb(chip_uid: str, *, timeout: float = 15.0) -> Path:
         if path and path != last:
             logger.info("found device {} for uid {}", path, chip_uid)
             last = path
-        if path and "katapult" in path.name.lower():
+        if path and is_katapult_mode(path):
             return path
         time.sleep(0.5)
     if last is not None:
         logger.warning("timed out waiting for katapult; using {}", last)
         return last
     raise TimeoutError(f"no /dev/serial/by-id/* matched chip_uid={chip_uid} within {timeout}s")
-
-
-def _run(cmd: list[str]) -> None:
-    logger.info("$ {}", " ".join(cmd))
-    subprocess.run(cmd, check=True)
 
 
 def flash_board(inv: Inventory, board: Board, firmware: Path) -> None:
@@ -56,14 +49,14 @@ def flash_board(inv: Inventory, board: Board, firmware: Path) -> None:
             raise FileNotFoundError(
                 f"[{board.name}] no /dev/serial/by-id entry for chip_uid={board.chip_uid}"
             )
-        if "katapult" not in device.name.lower():
+        if not is_katapult_mode(device):
             logger.info("[{}] {} is in app mode; requesting bootloader", board.name, device.name)
-            _run(["python3", flashtool, "-d", str(device), "-r"])
+            run(["python3", flashtool, "-d", str(device), "-r"])
             device = wait_for_usb(board.chip_uid)
-        _run(["python3", flashtool, "-d", str(device), "-f", str(firmware)])
+        run(["python3", flashtool, "-d", str(device), "-f", str(firmware)])
     else:
         assert board.canbus_uuid
-        _run([
+        run([
             "python3", flashtool,
             "-i", board.can_iface,
             "-u", board.canbus_uuid,
