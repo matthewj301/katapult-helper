@@ -9,6 +9,31 @@ from loguru import logger
 
 from ._proc import run
 from .inventory import Board, Inventory
+from .profiles import ProfileViolations, check_profile, get_profile
+
+
+def warn_profile_violations(board: Board, config_path: Path) -> ProfileViolations | None:
+    """Read .config, run profile checks, log results. Returns the violations
+    object so callers (flash) can decide whether to abort. Returns None when no
+    profile applies."""
+    profile = get_profile(board.profile or board.mcu_family)
+    if profile is None:
+        return None
+    if not config_path.exists():
+        logger.debug("[{}] no .config yet; skipping profile check", board.name)
+        return None
+    v = check_profile(config_path.read_text(), profile)
+    if not v.has_any:
+        logger.success("[{}] .config matches profile '{}'", board.name, profile.name)
+        return v
+    logger.warning("[{}] profile '{}' violations:", board.name, profile.name)
+    for key, expected in v.missing_required:
+        logger.warning("  REQUIRED  {}={} (currently unset or wrong)", key, expected)
+    for key, bad in v.set_incompatible:
+        logger.warning("  INCOMPATIBLE  {}={} (will brick this hardware)", key, bad)
+    for key, expected in v.missing_recommended:
+        logger.warning("  recommended  {}={}", key, expected)
+    return v
 
 
 def _build_failed(board: Board, step: str, exc: subprocess.CalledProcessError) -> click.ClickException:
@@ -54,5 +79,6 @@ def build_board(inv: Inventory, board: Board, *, run_menuconfig: bool) -> Path:
             f"[{board.name}] build succeeded but {binary} does not exist — "
             f"check {repo}'s output layout"
         )
+    warn_profile_violations(board, config_path)
     logger.success("[{}] built {} ({} bytes)", board.name, binary, binary.stat().st_size)
     return binary

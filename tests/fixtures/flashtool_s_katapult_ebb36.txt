@@ -1,0 +1,9 @@
+Connecting to CAN UUID 1586f2c37eaf on interface can0
+Verifying canbus connection
+Attempting to connect to bootloader
+Protocol Version: 1.0.0
+Block Size: 64 bytes
+Application Start: 0x8002000
+MCU Type: stm32g0b1xx
+Software Version: v0.1.0-39-gabcdef
+Status Request Complete

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import shutil
+import time
 from pathlib import Path
 
 import click
@@ -10,6 +11,7 @@ from rich.panel import Panel
 
 from ._proc import run
 from .inventory import Board, Inventory
+from .profiles import get_profile
 
 console = Console()
 
@@ -68,6 +70,18 @@ def _hint_for(family: str | None) -> dict[str, str] | None:
     return HINTS.get(family.lower())
 
 
+def _backup_config(config_path: Path) -> Path | None:
+    """Copy the current .config to .config.backup-<timestamp> so a bad
+    menuconfig session can be diffed/restored. No-op if the file doesn't exist."""
+    if not config_path.exists():
+        return None
+    ts = time.strftime("%Y%m%d-%H%M%S")
+    dest = config_path.with_name(f"{config_path.name}.backup-{ts}")
+    shutil.copy2(config_path, dest)
+    logger.info("[backup] {} -> {}", config_path, dest.name)
+    return dest
+
+
 def configure_board(inv: Inventory, board: Board, *, force: bool) -> Path:
     config_path = board.klipper_config.expanduser().resolve()
     config_path.parent.mkdir(parents=True, exist_ok=True)
@@ -80,6 +94,8 @@ def configure_board(inv: Inventory, board: Board, *, force: bool) -> Path:
         ):
             logger.info("[{}] skipped", board.name)
             return config_path
+
+    _backup_config(config_path)
 
     hint = _hint_for(board.mcu_family)
     body = [PRELUDE, "", f"[bold]Board:[/bold]   {board.name}",
@@ -98,6 +114,23 @@ def configure_board(inv: Inventory, board: Board, *, force: bool) -> Path:
             "[yellow]No hints for this mcu_family.[/yellow] See the Klipper docs "
             "or your board vendor for the correct bootloader offset."
         )
+
+    profile = get_profile(board.profile or board.mcu_family)
+    if profile is not None:
+        body.append("")
+        body.append(f"[bold]Profile:[/bold] [cyan]{profile.name}[/cyan]  ({profile.package_or_board})")
+        body.append(f"  [dim]{profile.notes}[/dim]")
+        if profile.required:
+            body.append("  [bold]required:[/bold]")
+            for k, v in profile.required.items():
+                body.append(f"    • {k}=[green]{v}[/green]")
+        if profile.incompatible:
+            body.append("  [bold red]must NOT set[/bold red] (would brick the chip):")
+            for k, v in profile.incompatible.items():
+                body.append(f"    • {k}=[red]{v}[/red]")
+        if profile.katapult_offsets:
+            offsets = ", ".join(f"0x{o:X}" for o in profile.katapult_offsets)
+            body.append(f"  Katapult offset: [cyan]{offsets}[/cyan]")
     console.print(Panel("\n".join(body), title="Katapult-helper: menuconfig walkthrough"))
 
     if not click.confirm("Launch menuconfig now?", default=True):

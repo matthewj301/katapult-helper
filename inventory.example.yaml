@@ -9,9 +9,17 @@
 #                   If missing, `build` runs menuconfig to create it.
 #   chip_uid:      USB transport only. Hex chip UID; the stable identifier across
 #                  Katapult and Klipper modes (the suffix in /dev/serial/by-id/*).
-#   mcu_family:    optional; informational (e.g. stm32f446xx, stm32g0b1xx, rp2040).
+#   mcu_family:    informational (e.g. stm32f446xx, stm32g0b1xx, rp2040). Also
+#                  drives auto-derivation of `profile` if not set explicitly.
 #   can_iface:     CAN transport only; defaults to "can0".
 #   canbus_uuid:   CAN transport only; the 12-hex Katapult UUID.
+#   profile:       optional. Names a hardware profile (see katapult_helper/profiles.py)
+#                  that encodes per-MCU truth: required Kconfig settings, settings
+#                  known to brick the chip, recommended defaults, and known-good
+#                  Katapult bootloader offsets. When set, build/flash run
+#                  pre-flight sanity checks against the .config and against the
+#                  live `flashtool.py -s` output. Auto-derived from mcu_family
+#                  when unambiguous.
 
 klipper_repo: ~/git/kalico
 katapult_repo: ~/katapult
@@ -21,6 +29,7 @@ boards:
     transport: usb
     chip_uid: 430031000D51313339373836
     mcu_family: stm32h723xx
+    profile: stm32h723xx-25mhz
     klipper_config: ~/printer_data/firmware_configs/doomcube_octopus.config
 
   voron-ebb36:
@@ -28,4 +37,5 @@ boards:
     can_iface: can0
     canbus_uuid: 1586f2c37eaf
     mcu_family: stm32g0b1xx
+    profile: stm32g0b1xx-8mhz
     klipper_config: ~/printer_data/firmware_configs/voron_ebb36.config

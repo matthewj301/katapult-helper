@@ -22,6 +22,7 @@ class Board:
     mcu_family: str | None = None
     can_iface: str = "can0"
     canbus_uuid: str | None = None
+    profile: str | None = None
 
     def __post_init__(self) -> None:
         if self.transport == "usb" and not self.chip_uid:
@@ -104,6 +105,7 @@ def build_inventory(raw: dict) -> Inventory:
             mcu_family=_str_or_none(entry.get("mcu_family")),
             can_iface=str(entry.get("can_iface", "can0")),
             canbus_uuid=_str_or_none(entry.get("canbus_uuid")),
+            profile=_str_or_none(entry.get("profile")),
         )
     return Inventory(klipper_repo=klipper_repo, katapult_repo=katapult_repo, boards=boards)
 

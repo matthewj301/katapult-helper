@@ -133,8 +133,11 @@ def build(ctx: click.Context, names: tuple[str, ...], menuconfig: bool) -> None:
 @click.argument("names", nargs=-1)
 @click.option("--firmware", "-f", type=click.Path(exists=True, path_type=Path),
               help="Use this prebuilt klipper.bin instead of inv.klipper_repo/out/klipper.bin.")
+@click.option("--force", is_flag=True,
+              help="Bypass the bootloader-offset preflight check. Use only if you're certain "
+                   "the build's CONFIG_FLASH_APPLICATION_ADDRESS matches the Katapult on the chip.")
 @click.pass_context
-def flash(ctx: click.Context, names: tuple[str, ...], firmware: Path | None) -> None:
+def flash(ctx: click.Context, names: tuple[str, ...], firmware: Path | None, force: bool) -> None:
     """Flash firmware to one or more boards. Does not rebuild."""
     inv = _load(ctx)
     boards = inv.select(names)
@@ -143,14 +146,16 @@ def flash(ctx: click.Context, names: tuple[str, ...], firmware: Path | None) -> 
         raise click.UsageError(f"firmware not found: {fw} (run `build` first or pass --firmware)")
     with klipper_stopped():
         for board in boards:
-            flash_board(inv, board, fw)
+            flash_board(inv, board, fw, force=force)
 
 
 @cli.command()
 @click.argument("names", nargs=-1)
 @click.option("--menuconfig/--no-menuconfig", default=False)
+@click.option("--force", is_flag=True,
+              help="Bypass the bootloader-offset preflight check.")
 @click.pass_context
-def run(ctx: click.Context, names: tuple[str, ...], menuconfig: bool) -> None:
+def run(ctx: click.Context, names: tuple[str, ...], menuconfig: bool, force: bool) -> None:
     """Full pipeline: build then flash, board-by-board. Klipper restarts once at end."""
     inv = _load(ctx)
     logger.info("klipper repo: {} ({})", inv.klipper_repo, inv.repo_kind)
@@ -158,7 +163,7 @@ def run(ctx: click.Context, names: tuple[str, ...], menuconfig: bool) -> None:
     with klipper_stopped():
         for board in boards:
             firmware = build_board(inv, board, run_menuconfig=menuconfig)
-            flash_board(inv, board, firmware)
+            flash_board(inv, board, firmware, force=force)
 
 
 @cli.command()

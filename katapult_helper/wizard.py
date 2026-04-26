@@ -173,7 +173,7 @@ def run_wizard(
         for board in inv.boards.values():
             firmware = build_board(inv, board, run_menuconfig=False)
             if do_flash:
-                flash_board(inv, board, firmware)
+                flash_board(inv, board, firmware, force=False)
             else:
                 logger.info("[{}] skipping flash (--no-flash)", board.name)
 

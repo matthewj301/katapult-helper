@@ -105,6 +105,51 @@ def test_flash_translates_called_process_error_to_clickexception(tmp_path: Path)
     assert "klipper.service" in msg
 
 
+def test_parse_app_start_extracts_offset() -> None:
+    stdout = (tmp_path_for_fixture()).read_text()
+    assert flash.parse_app_start(stdout) == 0x8002000
+
+
+def tmp_path_for_fixture() -> Path:
+    return Path(__file__).parent / "fixtures" / "flashtool_s_katapult_ebb36.txt"
+
+
+def test_parse_app_start_returns_none_when_absent() -> None:
+    assert flash.parse_app_start("") is None
+    assert flash.parse_app_start("Some random output\nWithout the marker\n") is None
+
+
+def test_verify_app_start_match_aborts_on_mismatch() -> None:
+    board = Board(
+        name="t", transport="usb",
+        klipper_config=Path("/tmp/x.config"), chip_uid="AAA",
+    )
+    stdout = "Application Start: 0x8001000\n"
+    with pytest.raises(click.ClickException) as exc_info:
+        flash.verify_app_start_match(board, 0x8002000, stdout)
+    msg = exc_info.value.message
+    assert "BOOTLOADER OFFSET MISMATCH" in msg
+    assert "0x8001000" in msg
+    assert "0x8002000" in msg
+
+
+def test_verify_app_start_match_passes_on_match() -> None:
+    board = Board(
+        name="t", transport="usb",
+        klipper_config=Path("/tmp/x.config"), chip_uid="AAA",
+    )
+    stdout = "Application Start: 0x8002000\n"
+    flash.verify_app_start_match(board, 0x8002000, stdout)  # must not raise
+
+
+def test_verify_app_start_match_skips_when_unparseable(caplog) -> None:
+    board = Board(
+        name="t", transport="usb",
+        klipper_config=Path("/tmp/x.config"), chip_uid="AAA",
+    )
+    flash.verify_app_start_match(board, 0x8002000, "no marker line here\n")  # must not raise
+
+
 def test_flash_missing_chip_uid_yields_friendly_error(tmp_path: Path) -> None:
     inv = Inventory(klipper_repo=tmp_path / "klipper", katapult_repo=tmp_path / "katapult")
     board = Board(
