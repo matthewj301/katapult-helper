@@ -6,6 +6,7 @@ from katapult_helper.profiles import (
     get_app_start_addr,
     get_profile,
     parse_kconfig,
+    resolve_board_profile,
 )
 
 
@@ -119,3 +120,32 @@ def test_all_profiles_have_consistent_offsets() -> None:
     for p in PROFILES.values():
         for offset in p.katapult_offsets:
             assert 0x08000000 <= offset < 0x09000000, f"{p.name}: 0x{offset:X}"
+
+
+def test_clock_ref_incompatible_lists_are_complete() -> None:
+    """Reviewer caught: F042 and H723 originally only listed a few of the
+    crystal-frequency choices as incompatible. Now derived from the full set."""
+    p = PROFILES["stm32f042x6-tssop20"]
+    for freq in ("8M", "12M", "16M", "20M", "24M", "25M"):
+        assert f"CONFIG_STM32_CLOCK_REF_{freq}" in p.incompatible
+    p = PROFILES["stm32h723xx-25mhz"]
+    for freq in ("8M", "12M", "16M", "20M", "24M"):
+        assert f"CONFIG_STM32_CLOCK_REF_{freq}" in p.incompatible
+
+
+def test_resolve_board_profile_explicit_wins(caplog) -> None:
+    p = resolve_board_profile("stm32f042x6-tssop20", "stm32g0b1xx")
+    assert p is not None and p.name == "stm32f042x6-tssop20"
+
+
+def test_resolve_board_profile_falls_back_to_mcu_on_typo(capsys) -> None:
+    """A typo in `profile:` must not silently disable all checks. Fall back
+    to mcu_family auto-derive if the explicit name doesn't resolve."""
+    p = resolve_board_profile("stm32f042-tssop", "stm32f042x6")  # typo
+    assert p is not None
+    assert p.name == "stm32f042x6-tssop20"
+
+
+def test_resolve_board_profile_returns_none_for_unknown_everything() -> None:
+    assert resolve_board_profile("nonsense", "also-nonsense") is None
+    assert resolve_board_profile(None, None) is None

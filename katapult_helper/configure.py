@@ -11,7 +11,7 @@ from rich.panel import Panel
 
 from ._proc import run
 from .inventory import Board, Inventory
-from .profiles import get_profile
+from .profiles import resolve_board_profile
 
 console = Console()
 
@@ -115,7 +115,7 @@ def configure_board(inv: Inventory, board: Board, *, force: bool) -> Path:
             "or your board vendor for the correct bootloader offset."
         )
 
-    profile = get_profile(board.profile or board.mcu_family)
+    profile = resolve_board_profile(board.profile, board.mcu_family)
     if profile is not None:
         body.append("")
         body.append(f"[bold]Profile:[/bold] [cyan]{profile.name}[/cyan]  ({profile.package_or_board})")

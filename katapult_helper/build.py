@@ -9,14 +9,14 @@ from loguru import logger
 
 from ._proc import run
 from .inventory import Board, Inventory
-from .profiles import ProfileViolations, check_profile, get_profile
+from .profiles import ProfileViolations, check_profile, resolve_board_profile
 
 
 def warn_profile_violations(board: Board, config_path: Path) -> ProfileViolations | None:
     """Read .config, run profile checks, log results. Returns the violations
     object so callers (flash) can decide whether to abort. Returns None when no
     profile applies."""
-    profile = get_profile(board.profile or board.mcu_family)
+    profile = resolve_board_profile(board.profile, board.mcu_family)
     if profile is None:
         return None
     if not config_path.exists():

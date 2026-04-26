@@ -35,6 +35,23 @@ class Profile:
 
 
 # Initial fleet — extend by adding entries.
+_ALL_STM32_CLOCK_REFS = (
+    # Every value in upstream Klipper's STM32_CLOCK_REF choice group as of 2026-04.
+    # Used to auto-build `incompatible` from the one `required` clock-ref entry.
+    "CONFIG_STM32_CLOCK_REF_INTERNAL",
+    "CONFIG_STM32_CLOCK_REF_8M",
+    "CONFIG_STM32_CLOCK_REF_12M",
+    "CONFIG_STM32_CLOCK_REF_16M",
+    "CONFIG_STM32_CLOCK_REF_20M",
+    "CONFIG_STM32_CLOCK_REF_24M",
+    "CONFIG_STM32_CLOCK_REF_25M",
+)
+
+
+def _all_clock_refs_except(required_key: str) -> dict[str, str]:
+    return {k: "y" for k in _ALL_STM32_CLOCK_REFS if k != required_key}
+
+
 PROFILES: dict[str, Profile] = {
     "stm32f042x6-tssop20": Profile(
         name="stm32f042x6-tssop20",
@@ -48,8 +65,7 @@ PROFILES: dict[str, Profile] = {
         },
         incompatible={
             "CONFIG_STM32_USB_PA11_PA12": "y",
-            "CONFIG_STM32_CLOCK_REF_8M": "y",
-            "CONFIG_STM32_CLOCK_REF_25M": "y",
+            **_all_clock_refs_except("CONFIG_STM32_CLOCK_REF_INTERNAL"),
         },
         recommended={
             "CONFIG_WANT_OPTIMIZE_SIZE": "y",   # 32KB total flash
@@ -67,18 +83,15 @@ PROFILES: dict[str, Profile] = {
         clock_freq_hz=64_000_000,
         katapult_offsets=(0x08002000,),
         required={
-            "CONFIG_STM32_CLOCK_REF_8M": "y",   # board has external 8MHz crystal
+            "CONFIG_STM32_CLOCK_REF_8M": "y",
         },
-        incompatible={
-            "CONFIG_STM32_CLOCK_REF_INTERNAL": "y",  # HSI16 is wrong frequency for these boards
-        },
-        recommended={
-            "CONFIG_CANBUS_FREQUENCY": "1000000",    # if CAN is selected
-        },
+        incompatible=_all_clock_refs_except("CONFIG_STM32_CLOCK_REF_8M"),
+        recommended={},
         notes=(
             "G0B1 boards with external 8 MHz crystal. Available comm interfaces are USB "
             "(PA11/PA12) and FDCAN1 (PB0/PB1) — pick one based on deployment. Katapult "
-            "typically at 8 KiB offset (0x08002000)."
+            "typically at 8 KiB offset (0x08002000). CANBUS_FREQUENCY is deployment-"
+            "specific (only relevant if CAN selected) so it's not encoded here."
         ),
     ),
     "stm32h723xx-25mhz": Profile(
@@ -90,15 +103,14 @@ PROFILES: dict[str, Profile] = {
         required={
             "CONFIG_STM32_CLOCK_REF_25M": "y",
         },
-        incompatible={
-            "CONFIG_STM32_CLOCK_REF_INTERNAL": "y",
-            "CONFIG_STM32_CLOCK_REF_8M": "y",
-            "CONFIG_STM32_CLOCK_REF_12M": "y",
-        },
+        incompatible=_all_clock_refs_except("CONFIG_STM32_CLOCK_REF_25M"),
         recommended={},
         notes=(
             "H723-class mainboards. 25 MHz crystal. Katapult typically at 128 KiB offset "
-            "(0x08020000) because H723 has 1 MB flash and Katapult itself is larger."
+            "(0x08020000) because H723 has 1 MB flash and Katapult itself is larger. "
+            "katapult_offsets is advisory (used in error messages); the runtime offset "
+            "check compares the build's CONFIG_FLASH_APPLICATION_ADDRESS to whatever "
+            "the on-chip Katapult actually reports via `flashtool.py -s`."
         ),
     ),
 }
@@ -116,7 +128,8 @@ _DEFAULT_BY_MCU: dict[str, str] = {
 
 def get_profile(name_or_mcu: str | None) -> Profile | None:
     """Look up a profile by explicit name, or by MCU family (auto-derive).
-    Returns None if there's no match — callers treat this as 'no validation'."""
+    Returns None if there's no match — callers treat this as 'no validation'.
+    Use `resolve_board_profile` for the board-aware lookup that warns on typos."""
     if not name_or_mcu:
         return None
     if name_or_mcu in PROFILES:
@@ -125,6 +138,31 @@ def get_profile(name_or_mcu: str | None) -> Profile | None:
     if derived:
         return PROFILES.get(derived)
     return None
+
+
+def resolve_board_profile(
+    explicit: str | None,
+    mcu_family: str | None,
+) -> Profile | None:
+    """Look up a profile for a board. Tries `explicit` (an inventory `profile:`
+    field) first, then falls back to `mcu_family` auto-derivation. If `explicit`
+    is set but doesn't match a known profile name (typo footgun), log a warning
+    listing the known names — silently disabling all checks for that board is
+    the worst possible outcome."""
+    if explicit:
+        p = PROFILES.get(explicit)
+        if p is not None:
+            return p
+        # explicit doesn't match — also try as a mcu_family for forgiving lookup
+        derived_name = _DEFAULT_BY_MCU.get(explicit)
+        if derived_name:
+            return PROFILES.get(derived_name)
+        from loguru import logger as _logger
+        _logger.warning(
+            "unknown profile {!r}; known profiles: {}. Falling back to mcu_family auto-derive.",
+            explicit, ", ".join(sorted(PROFILES.keys())),
+        )
+    return get_profile(mcu_family)
 
 
 @dataclass

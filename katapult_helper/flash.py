@@ -11,11 +11,13 @@ from loguru import logger
 
 from ._proc import BY_ID, is_katapult_mode, run
 from .inventory import Board, Inventory
-from .profiles import get_app_start_addr, get_profile
+from .profiles import get_app_start_addr, resolve_board_profile
 
-# Per Katapult's flashtool.py: `f"Application Start: 0x{self.app_start_addr:4X}\n"`
-# (uppercase hex, no padding for typical addresses).
-APP_START_RE = re.compile(r"^Application Start:\s*0x([0-9A-Fa-f]+)\s*$", re.MULTILINE)
+# Per Katapult's flashtool.py: `f"Application Start: 0x{self.app_start_addr:4X}\n"`.
+# Python's `:4X` uses *space* padding when the value is < 4 hex digits, so the
+# regex tolerates whitespace between `0x` and the digits. STM32 addresses are
+# always 7+ hex digits in practice, but defense-in-depth.
+APP_START_RE = re.compile(r"^Application Start:\s*0x\s*([0-9A-Fa-f]+)\s*$", re.MULTILINE)
 
 
 def parse_app_start(stdout: str) -> int | None:
@@ -59,7 +61,7 @@ def verify_app_start_match(board: Board, firmware_offset: int, katapult_stdout: 
         )
         return
     if chip_offset != firmware_offset:
-        profile = get_profile(board.profile or board.mcu_family)
+        profile = resolve_board_profile(board.profile, board.mcu_family)
         known = ""
         if profile and profile.katapult_offsets:
             known = (
@@ -123,11 +125,35 @@ def wait_for_usb(chip_uid: str, *, timeout: float = 15.0) -> Path:
     raise TimeoutError(f"no /dev/serial/by-id/* matched chip_uid={chip_uid} within {timeout}s")
 
 
+def _request_can_bootloader(inv: Inventory, board: Board) -> bool:
+    """For CAN boards in Klipper-app mode, send the Katapult reboot frame so
+    the offset preflight has something to query. Returns True on success."""
+    flashtool = str(inv.flashtool)
+    try:
+        run([
+            "python3", flashtool,
+            "-i", board.can_iface,
+            "-u", board.canbus_uuid,  # type: ignore[list-item]
+            "-r",
+        ])
+    except subprocess.CalledProcessError:
+        logger.warning("[{}] CAN bootloader request failed", board.name)
+        return False
+    time.sleep(2.0)  # Katapult takes a moment to come up on the bus
+    return True
+
+
 def _preflight_offset_check(inv: Inventory, board: Board, force: bool) -> None:
     """Before flashing, verify the build's CONFIG_FLASH_APPLICATION_ADDRESS
-    matches the offset the Katapult on the chip expects. Skipped silently if
-    the chip isn't currently in Katapult mode (e.g. CAN device that needs `-r`
-    first — that path's offset will be checked on retry)."""
+    matches the offset the Katapult on the chip expects.
+
+    USB boards in app mode: skipped silently here; the main flash_board flow
+    sends `-r` + `wait_for_usb` and re-runs this check.
+
+    CAN boards in app mode: we send a CAN bootloader request here ourselves so
+    the protection isn't silently bypassed for the entire CAN deployment path
+    (which is exactly the EBB36 / toolboard scenario).
+    """
     config_path = board.klipper_config.expanduser()
     if not config_path.exists():
         return
@@ -136,11 +162,37 @@ def _preflight_offset_check(inv: Inventory, board: Board, force: bool) -> None:
         logger.warning("[{}] no CONFIG_FLASH_APPLICATION_ADDRESS in {}; skipping",
                        board.name, config_path)
         return
+
     katapult_stdout = query_katapult_status(inv, board)
     if katapult_stdout is None:
-        logger.debug("[{}] chip not currently in Katapult mode; offset check deferred",
-                     board.name)
-        return
+        if board.transport == "can":
+            logger.info("[{}] CAN board not in Katapult mode; sending -r for offset preflight",
+                        board.name)
+            if not _request_can_bootloader(inv, board):
+                if force:
+                    logger.warning("[{}] CAN preflight skipped, --force in effect", board.name)
+                    return
+                raise click.ClickException(
+                    f"[{board.name}] could not put CAN board into Katapult mode for the "
+                    f"bootloader-offset preflight. Re-run with --force to flash anyway, "
+                    f"or check the CAN bus."
+                )
+            katapult_stdout = query_katapult_status(inv, board)
+            if katapult_stdout is None:
+                if force:
+                    logger.warning("[{}] no Katapult response after -r; --force overrides",
+                                   board.name)
+                    return
+                raise click.ClickException(
+                    f"[{board.name}] sent CAN bootloader request but no Katapult response. "
+                    f"The board may already be in Katapult but flashtool.py -s timed out; "
+                    f"re-run with --force to flash anyway."
+                )
+        else:
+            logger.debug("[{}] USB chip not in Katapult mode; offset check deferred to "
+                         "post-bootloader-request retry", board.name)
+            return
+
     try:
         verify_app_start_match(board, firmware_offset, katapult_stdout)
     except click.ClickException:

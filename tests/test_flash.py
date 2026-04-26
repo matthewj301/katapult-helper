@@ -105,18 +105,24 @@ def test_flash_translates_called_process_error_to_clickexception(tmp_path: Path)
     assert "klipper.service" in msg
 
 
+FIXTURES = Path(__file__).parent / "fixtures"
+
+
 def test_parse_app_start_extracts_offset() -> None:
-    stdout = (tmp_path_for_fixture()).read_text()
+    stdout = (FIXTURES / "flashtool_s_katapult_ebb36.txt").read_text()
     assert flash.parse_app_start(stdout) == 0x8002000
-
-
-def tmp_path_for_fixture() -> Path:
-    return Path(__file__).parent / "fixtures" / "flashtool_s_katapult_ebb36.txt"
 
 
 def test_parse_app_start_returns_none_when_absent() -> None:
     assert flash.parse_app_start("") is None
     assert flash.parse_app_start("Some random output\nWithout the marker\n") is None
+
+
+def test_parse_app_start_tolerates_short_address_with_space_padding() -> None:
+    # Python's `:4X` left-pads with spaces, not zeros. STM32 addresses are
+    # always >= 0x08000000 so this won't happen in practice, but defense.
+    assert flash.parse_app_start("Application Start: 0x 800\n") == 0x800
+    assert flash.parse_app_start("Application Start: 0x   8\n") == 0x8
 
 
 def test_verify_app_start_match_aborts_on_mismatch() -> None:
@@ -142,12 +148,93 @@ def test_verify_app_start_match_passes_on_match() -> None:
     flash.verify_app_start_match(board, 0x8002000, stdout)  # must not raise
 
 
-def test_verify_app_start_match_skips_when_unparseable(caplog) -> None:
+def test_verify_app_start_match_skips_when_unparseable() -> None:
     board = Board(
         name="t", transport="usb",
         klipper_config=Path("/tmp/x.config"), chip_uid="AAA",
     )
     flash.verify_app_start_match(board, 0x8002000, "no marker line here\n")  # must not raise
+
+
+def _write_config(path: Path, app_addr: int) -> None:
+    path.write_text(f"CONFIG_FLASH_APPLICATION_ADDRESS=0x{app_addr:X}\n")
+
+
+def test_preflight_aborts_on_offset_mismatch(tmp_path: Path) -> None:
+    """Integration test: build offset 0x8002000, but chip reports 0x8001000.
+    flash_board must abort with ClickException, not flash."""
+    cfg = tmp_path / "board.config"
+    _write_config(cfg, 0x8002000)
+    by_id = _make_by_id(tmp_path, ["usb-katapult_stm32_AAA-if00"])
+    inv = Inventory(klipper_repo=tmp_path / "klipper", katapult_repo=tmp_path / "katapult")
+    board = Board(name="x", transport="usb", klipper_config=cfg, chip_uid="AAA")
+
+    def fake_query(inv_, board_):
+        return "Application Start: 0x8001000\n"
+
+    with (
+        patch.object(flash, "BY_ID", by_id),
+        patch.object(flash, "query_katapult_status", side_effect=fake_query),
+        patch.object(flash, "run") as mock_run,
+        pytest.raises(click.ClickException, match="BOOTLOADER OFFSET MISMATCH"),
+    ):
+        flash.flash_board(inv, board, tmp_path / "klipper.bin")
+    assert not mock_run.called  # never reached the actual flashtool.py -f
+
+
+def test_preflight_passes_when_offsets_match(tmp_path: Path) -> None:
+    cfg = tmp_path / "board.config"
+    _write_config(cfg, 0x8002000)
+    by_id = _make_by_id(tmp_path, ["usb-katapult_stm32_AAA-if00"])
+    fw = tmp_path / "klipper.bin"
+    fw.write_text("")
+    inv = Inventory(klipper_repo=tmp_path / "klipper", katapult_repo=tmp_path / "katapult")
+    board = Board(name="x", transport="usb", klipper_config=cfg, chip_uid="AAA")
+
+    with (
+        patch.object(flash, "BY_ID", by_id),
+        patch.object(flash, "query_katapult_status", return_value="Application Start: 0x8002000\n"),
+        patch.object(flash, "run"),  # flashtool.py invocation no-op
+    ):
+        flash.flash_board(inv, board, fw)  # must not raise
+
+
+def test_force_bypasses_offset_mismatch(tmp_path: Path) -> None:
+    cfg = tmp_path / "board.config"
+    _write_config(cfg, 0x8002000)
+    by_id = _make_by_id(tmp_path, ["usb-katapult_stm32_AAA-if00"])
+    fw = tmp_path / "klipper.bin"
+    fw.write_text("")
+    inv = Inventory(klipper_repo=tmp_path / "klipper", katapult_repo=tmp_path / "katapult")
+    board = Board(name="x", transport="usb", klipper_config=cfg, chip_uid="AAA")
+
+    with (
+        patch.object(flash, "BY_ID", by_id),
+        patch.object(flash, "query_katapult_status", return_value="Application Start: 0x8001000\n"),
+        patch.object(flash, "run") as mock_run,
+    ):
+        flash.flash_board(inv, board, fw, force=True)  # must not raise
+    assert mock_run.called  # we bypassed and proceeded to flash
+
+
+def test_can_preflight_aborts_when_no_katapult_response(tmp_path: Path) -> None:
+    """CAN board in Klipper-app mode whose -r request appears to succeed but
+    the follow-up -s still returns nothing. Without --force, abort."""
+    cfg = tmp_path / "board.config"
+    _write_config(cfg, 0x8002000)
+    inv = Inventory(klipper_repo=tmp_path / "klipper", katapult_repo=tmp_path / "katapult")
+    board = Board(
+        name="x", transport="can", klipper_config=cfg,
+        canbus_uuid="abc123def456", can_iface="can0",
+    )
+
+    with (
+        patch.object(flash, "query_katapult_status", return_value=None),
+        patch.object(flash, "_request_can_bootloader", return_value=True),
+        patch.object(flash, "run"),
+        pytest.raises(click.ClickException, match="no Katapult response"),
+    ):
+        flash.flash_board(inv, board, tmp_path / "klipper.bin")
 
 
 def test_flash_missing_chip_uid_yields_friendly_error(tmp_path: Path) -> None:
