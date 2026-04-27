@@ -1,19 +1,17 @@
 # katapult-helper
 
-A batch flasher for [Klipper](https://www.klipper3d.org/) (or [Kalico](https://github.com/KalicoCrew/kalico)) firmware on MCUs running the [Katapult](https://github.com/Arksine/katapult) bootloader.
+A small CLI that batch-flashes [Klipper](https://www.klipper3d.org/) (or [Kalico](https://github.com/KalicoCrew/kalico)) firmware to MCUs running the [Katapult](https://github.com/Arksine/katapult) bootloader.
 
-If you've ever flashed a couple of toolheads, a controller, and a chamber MCU after every Klipper update — clicking through `make menuconfig` for each one, copying the right `.config`, remembering which `/dev/serial/by-id/...` is which — this is for that.
+If you have more than one or two boards in your printer, re-flashing them after every Klipper update gets repetitive. This tool reads a YAML inventory of your boards and handles the discover → menuconfig → build → flash sequence for all of them in one command. Sharing it in case it's useful to someone else.
 
-You list your boards once in a YAML file, then `katapult-helper wizard` does the whole thing: finds new MCUs, walks you through menuconfig for any new ones, builds, flashes, restarts klipper. Run it again next month and it does the same builds and flashes (no menuconfig prompts unless something's missing).
+## What it handles
 
-## What it does well
-
-- Identifies boards by their **chip UID**, not their by-id path. The by-id flips between `usb-katapult_*` and `usb-Klipper_*` when an MCU reboots, but the hex suffix is the same. Resolved at flash time, so it Just Works whichever mode the device is currently in.
-- Keeps each board's `.config` outside the Klipper tree, in `~/printer_data/firmware_configs/<board>.config`, and passes it to `make` via `KCONFIG_CONFIG=...`. Your in-tree `.config` is never touched. Multiple boards, one Klipper checkout.
-- Stops `klipper.service` once at the start of a flash batch, restarts once at the end. Not per board.
-- Talks to `flashtool.py` over the wire (subprocess), not its internals. So when upstream Katapult releases something new, behavior tracks.
-- Has a **bootloader-offset preflight** that runs `flashtool.py -s` against the chip and refuses to write a firmware built for the wrong offset. This exists because someone (me) bricked an expansion board on 2026-04-26 by feeding it firmware compiled for the wrong flash address. Now that's structurally impossible without `--force`.
-- Has **hardware profiles** that encode "things that will brick this chip if you toggle them in menuconfig" (USB pins on packages that don't have those pins, crystal frequencies on boards with no crystal, etc). Per-MCU; warned at build, blocked at flash.
+- Identifies boards by their **chip UID** rather than the by-id path, so it still works after the symlink prefix changes between `usb-katapult_*` and `usb-Klipper_*`.
+- Keeps each board's `.config` outside the Klipper tree (typically `~/printer_data/firmware_configs/<board>.config`) and passes it via `KCONFIG_CONFIG=...`. One Klipper checkout, multiple boards.
+- Stops `klipper.service` once at the start of a flash batch and restarts it once at the end.
+- Calls `flashtool.py` as a subprocess (no Python imports of Katapult internals), so behavior tracks upstream.
+- Runs a bootloader-offset preflight before flashing — checks `flashtool.py -s` against the build's `CONFIG_FLASH_APPLICATION_ADDRESS` and refuses to write a mismatch.
+- Has per-MCU hardware profiles that warn at build time about settings that won't work for that chip (wrong USB pin choice for a small package, wrong clock reference for a board with no crystal, etc.).
 
 ## Install
 
@@ -24,21 +22,21 @@ python3 -m venv .venv && source .venv/bin/activate
 pip install -e .
 ```
 
-Python 3.9+. The Pi running klipper is 3.9, so we are too.
+Python 3.9+ (so it works on Raspberry Pi OS).
 
 You'll also need:
 
-- A Klipper or Kalico checkout somewhere (`~/klipper`, `~/git/kalico`, wherever).
-- A Katapult checkout (`~/katapult`) — we shell out to its `scripts/flashtool.py`.
+- A Klipper or Kalico checkout somewhere (`~/klipper`, `~/git/kalico`, etc.).
+- A Katapult checkout (`~/katapult`) — the tool shells out to its `scripts/flashtool.py`.
 - Standard build tools: `make`, `gcc-arm-none-eabi`, `python3`, `pyserial`.
-- `can-utils` and `can0` up if you have CAN toolheads.
-- Your user in `dialout` and able to `sudo systemctl stop klipper` without a password prompt. The cleanest way:
+- `can-utils` and a configured `can0` interface if you have CAN toolheads.
+- Your user in `dialout`, and able to `sudo systemctl stop klipper` without a password prompt:
 
   ```bash
   echo "$USER ALL=NOPASSWD: /bin/systemctl" | sudo tee /etc/sudoers.d/katapult-helper
   ```
 
-  Without this, the tool will refuse to start and tell you why — it'd otherwise leave klipper holding `/dev/ttyACM*` and the flash would fail with "device already in use".
+  Without that, the tool will refuse to start a flash and tell you why — otherwise klipper would keep `/dev/ttyACM*` open and the flash would fail with "device already in use".
 
 ## Quick start
 
@@ -50,14 +48,14 @@ katapult-helper wizard
 
 The wizard:
 
-1. Scans `/dev/serial/by-id/*` and CAN bus.
-2. For any MCU it doesn't recognize, asks you to name it and pick a `.config` path. Writes the new entry back into `inventory.yaml` (with comments preserved).
-3. For any board missing its `.config`, opens menuconfig with the relevant hints up front (bootloader offset, what NOT to set for that chip).
+1. Scans `/dev/serial/by-id/*` and the CAN bus.
+2. For any MCU not yet in `inventory.yaml`, asks for a friendly name and a `.config` path, and writes the new entry back to the YAML (preserving comments).
+3. For any board missing its `.config`, opens menuconfig with relevant hints up front.
 4. Stops klipper.
-5. For each board: `make clean` → `make olddefconfig` → `make -j` → `flashtool.py …`.
+5. For each board, runs `make clean` → `make olddefconfig` → `make -j` → `flashtool.py …`.
 6. Restarts klipper.
 
-`--no-flash` does everything except the actual write — useful when you just want to make sure things compile.
+Pass `--no-flash` to do everything except the actual write — useful for checking that things compile.
 
 ## inventory.yaml
 
@@ -88,15 +86,15 @@ boards:
 
 | Command | What it does |
 |---|---|
-| `katapult-helper wizard` | The whole pipeline. Discover → upsert → configure → build → flash. |
+| `katapult-helper wizard` | The whole pipeline. |
 | `katapult-helper list` | Show the current inventory. |
-| `katapult-helper discover [--raw] [--can-iface IFACE]` | Scan USB and CAN. `--raw` dumps the unparsed `flashtool.py -q` output, useful for spotting upstream format drift. |
-| `katapult-helper configure [NAMES…] [--all-missing] [--force]` | Run menuconfig for selected boards. Backs up the existing `.config` first. Shows the relevant profile hints up front. |
-| `katapult-helper build [NAMES…] [--menuconfig]` | Build only. Auto-runs menuconfig if there's no `.config` yet. |
-| `katapult-helper flash [NAMES…] [-f path/to/klipper.bin] [--force]` | Flash only. `--force` skips the bootloader-offset preflight (don't use this unless you know what you're doing). |
+| `katapult-helper discover [--raw] [--can-iface IFACE]` | Scan USB and CAN. `--raw` shows unparsed `flashtool.py -q` output. |
+| `katapult-helper configure [NAMES…] [--all-missing] [--force]` | Run menuconfig for selected boards. Backs up the existing `.config` first. |
+| `katapult-helper build [NAMES…] [--menuconfig]` | Build only. |
+| `katapult-helper flash [NAMES…] [-f path/to/klipper.bin] [--force]` | Flash only. `--force` skips the bootloader-offset preflight. |
 | `katapult-helper run [NAMES…] [--force]` | Build + flash. |
 
-`NAMES` is optional — leave it off to operate on all boards in the inventory.
+`NAMES` is optional everywhere — leave it off to operate on all boards.
 
 Global flags:
 
@@ -105,17 +103,15 @@ Global flags:
 
 ## Hardware profiles
 
-Each board can name a `profile:` (defined in `katapult_helper/profiles.py`). Profiles encode hardware-truth — clock reference, USB pin choices, packaging quirks, the typical Katapult offset for the family. They drive:
+Each board can name a `profile:` (defined in `katapult_helper/profiles.py`). Profiles encode hardware truth — clock reference, USB pin choices, packaging quirks, the typical Katapult offset for the family. They're used for:
 
-- **Pre-flash offset check.** The tool reads `Application Start: 0xXXX` from `flashtool.py -s` and compares to your build's `CONFIG_FLASH_APPLICATION_ADDRESS`. Mismatch → abort, clean error, no write.
-- **Post-build sanity warnings.** Parses your `.config` against the profile and yells about settings that will brick the chip (e.g. `STM32_USB_PA11_PA12=y` on an stm32f042x6 in TSSOP-20 — the package has no PA11/PA12 pins).
-- **Better menuconfig hints.** When you run `configure`, the panel shows the required and forbidden settings for that MCU, so you don't accidentally toggle yourself into a brick.
+- The pre-flash offset check.
+- Post-build warnings about settings that won't work on the chip.
+- Hints shown in menuconfig before you run it.
 
-Current profiles cover stm32f042x6 TSSOP-20, stm32g0b1xx with 8 MHz crystal (BTT MMB / EBB36 / EBB42), and stm32h723xx with 25 MHz crystal (Octopus Max EZ class). Adding a new board = adding one entry to that file.
+Currently included: `stm32f042x6-tssop20`, `stm32g0b1xx-8mhz` (BTT MMB / EBB36 / EBB42), and `stm32h723xx-25mhz` (Octopus Max EZ class). If your board's MCU has a profile, the extra checks run automatically; if not, they're skipped (nothing breaks). PRs welcome for new boards.
 
-If your board's MCU has a profile, validation runs automatically. If not (e.g. stm32f446xx — common but not yet covered), nothing breaks; you just don't get the extra layer of protection. PRs welcome.
-
-## A note on bootloader offsets
+## Bootloader offsets
 
 | MCU family | Typical Katapult offset |
 |---|---|
@@ -126,22 +122,22 @@ If your board's MCU has a profile, validation runs automatically. If not (e.g. s
 | `stm32h723xx` | 128 KiB |
 | `rp2040` | 16 KiB |
 
-These match what most people build Katapult with. **The offset in your Klipper `.config` has to match the offset Katapult was built with — if Katapult sits at 0x08000000–0x08002000 and Klipper expects to start at 0x08001000, the chip will jump into the middle of Katapult and crash.** The preflight check catches this; if you see a `BOOTLOADER OFFSET MISMATCH` error, that's why.
+The offset in your Klipper `.config` has to match the offset Katapult was built with on the chip. If they don't match, the chip jumps to the wrong address and won't boot. The pre-flash offset check catches this — if you see a `BOOTLOADER OFFSET MISMATCH` error, that's what it means.
 
 ## Development
 
 ```bash
 pip install -e ".[dev]"
-pytest                          # ~75 tests, no hardware needed
+pytest
 ```
 
-Tests live in `tests/`. Real captures from `flashtool.py -q` and `flashtool.py -s` against real boards live in `tests/fixtures/` so the parsers stay honest about upstream output. Subprocess calls to `make` and `flashtool.py` aren't mocked — the contract is the CLI invocation, and mocks drift; tests target the parsers, the YAML round-trip, the by-id resolution, and the error-translation paths.
+Subprocess calls to `make` and `flashtool.py` aren't mocked; tests target the parsers, the YAML round-trip, the by-id resolution, and the error-translation paths. Real captures from `flashtool.py -q` and `flashtool.py -s` live in `tests/fixtures/`.
 
-## Status
+## Notes
 
-Used in anger. Validated against live hardware (stm32f042x6 expansion board, stm32g0b1xx EBB36 on CAN, stm32h723xx Octopus). USB and CAN paths both exercised end-to-end. Recovered exactly one brick by writing the offset preflight that now prevents that brick.
+Assumes systemd for the klipper service. Non-systemd hosts would need to swap out the service stop/start helper.
 
-Assumes systemd. Non-systemd hosts would need to swap out the `klipper_stopped()` context manager.
+This was put together quickly, so expect rough edges. Issues and PRs welcome.
 
 ## License
 
