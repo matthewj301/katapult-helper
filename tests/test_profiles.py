@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from katapult_helper.profiles import (
     PROFILES,
+    apply_profile_kconfig,
     check_profile,
     get_app_start_addr,
     get_profile,
@@ -149,3 +150,59 @@ def test_resolve_board_profile_falls_back_to_mcu_on_typo(capsys) -> None:
 def test_resolve_board_profile_returns_none_for_unknown_everything() -> None:
     assert resolve_board_profile("nonsense", "also-nonsense") is None
     assert resolve_board_profile(None, None) is None
+
+
+def test_g0b1_profile_16mhz_required() -> None:
+    p = PROFILES["stm32g0b1xx-16mhz"]
+    assert p.mcu_family == "stm32g0b1xx"
+    assert "CONFIG_STM32_CLOCK_REF_16M" in p.required
+    text = "CONFIG_STM32_CLOCK_REF_8M=y\n"
+    v = check_profile(text, p)
+    assert v.has_blocking
+    assert any(k == "CONFIG_STM32_CLOCK_REF_8M" for k, _ in v.set_incompatible)
+
+
+def test_g0b1_16mhz_incompatible_list_is_complete() -> None:
+    p = PROFILES["stm32g0b1xx-16mhz"]
+    for freq in ("INTERNAL", "8M", "12M", "20M", "24M", "25M"):
+        assert f"CONFIG_STM32_CLOCK_REF_{freq}" in p.incompatible
+    assert "CONFIG_STM32_CLOCK_REF_16M" not in p.incompatible
+
+
+def test_apply_profile_kconfig_fixes_wrong_clock() -> None:
+    p = PROFILES["stm32g0b1xx-16mhz"]
+    text = (
+        "CONFIG_MACH_STM32=y\n"
+        "CONFIG_STM32_CLOCK_REF_8M=y\n"
+        "# CONFIG_STM32_CLOCK_REF_16M is not set\n"
+    )
+    new_text, changes = apply_profile_kconfig(text, p)
+    parsed = parse_kconfig(new_text)
+    assert parsed["CONFIG_STM32_CLOCK_REF_16M"] == "y"
+    assert parsed["CONFIG_STM32_CLOCK_REF_8M"] == "n"
+    assert len(changes) == 2
+    assert any("set CONFIG_STM32_CLOCK_REF_16M=y" in c for c in changes)
+    assert any("unset CONFIG_STM32_CLOCK_REF_8M=y" in c for c in changes)
+
+
+def test_apply_profile_kconfig_noop_when_already_correct() -> None:
+    p = PROFILES["stm32g0b1xx-16mhz"]
+    text = (
+        "CONFIG_MACH_STM32=y\n"
+        "CONFIG_STM32_CLOCK_REF_16M=y\n"
+        "# CONFIG_STM32_CLOCK_REF_8M is not set\n"
+    )
+    new_text, changes = apply_profile_kconfig(text, p)
+    assert changes == []
+    assert new_text == text
+
+
+def test_apply_profile_kconfig_adds_missing_required_key() -> None:
+    """If the required key doesn't appear at all, it gets appended."""
+    p = PROFILES["stm32f042x6-tssop20"]
+    text = "CONFIG_MACH_STM32F0=y\n"
+    new_text, changes = apply_profile_kconfig(text, p)
+    parsed = parse_kconfig(new_text)
+    assert parsed["CONFIG_STM32_USB_PA11_PA12_REMAP"] == "y"
+    assert parsed["CONFIG_STM32_CLOCK_REF_INTERNAL"] == "y"
+    assert any("CONFIG_STM32_USB_PA11_PA12_REMAP" in c for c in changes)

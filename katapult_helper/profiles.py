@@ -94,6 +94,23 @@ PROFILES: dict[str, Profile] = {
             "specific (only relevant if CAN selected) so it's not encoded here."
         ),
     ),
+    "stm32g0b1xx-16mhz": Profile(
+        name="stm32g0b1xx-16mhz",
+        mcu_family="stm32g0b1xx",
+        package_or_board="STM32G0B1 boards with 16 MHz crystal (Fysetc FPS rev3.x, similar)",
+        clock_freq_hz=64_000_000,
+        katapult_offsets=(0x08002000,),
+        required={
+            "CONFIG_STM32_CLOCK_REF_16M": "y",
+        },
+        incompatible=_all_clock_refs_except("CONFIG_STM32_CLOCK_REF_16M"),
+        recommended={},
+        notes=(
+            "G0B1 boards with external 16 MHz crystal. Same MCU as the 8 MHz variant; "
+            "only the crystal frequency differs. Comm interfaces: USB (PA11/PA12) and "
+            "FDCAN1 (PB0/PB1). Katapult typically at 8 KiB offset (0x08002000)."
+        ),
+    ),
     "stm32h723xx-25mhz": Profile(
         name="stm32h723xx-25mhz",
         mcu_family="stm32h723xx",
@@ -213,6 +230,55 @@ def check_profile(config_text: str, profile: Profile) -> ProfileViolations:
         if cfg.get(key, "n") != expected:
             v.missing_recommended.append((key, expected))
     return v
+
+
+def _set_kconfig_value(lines: list[str], key: str, value: str | None) -> list[str]:
+    """Replace or append a Kconfig key in a list of .config lines.
+
+    value=None unsets the key (``# CONFIG_KEY is not set``).
+    """
+    new_line = f"# {key} is not set" if value is None else f"{key}={value}"
+    set_prefix = f"{key}="
+    unset_marker = f"# {key} is not set"
+    found = False
+    result: list[str] = []
+    for line in lines:
+        stripped = line.strip()
+        if stripped.startswith(set_prefix) or stripped == unset_marker:
+            result.append(new_line)
+            found = True
+        else:
+            result.append(line)
+    if not found:
+        result.append(new_line)
+    return result
+
+
+def apply_profile_kconfig(config_text: str, profile: Profile) -> tuple[str, list[str]]:
+    """Patch required/incompatible Kconfig values in a .config per *profile*.
+
+    Returns ``(new_config_text, changes)`` where *changes* is a list of
+    human-readable descriptions of what was fixed.  An empty list means the
+    config already satisfied the profile.
+    """
+    cfg = parse_kconfig(config_text)
+    lines = config_text.splitlines()
+    changes: list[str] = []
+
+    for key, bad in profile.incompatible.items():
+        if cfg.get(key, "n") == bad:
+            lines = _set_kconfig_value(lines, key, None)
+            changes.append(f"unset {key}={bad} (incompatible)")
+
+    for key, expected in profile.required.items():
+        if cfg.get(key, "n") != expected:
+            lines = _set_kconfig_value(lines, key, expected)
+            changes.append(f"set {key}={expected} (required)")
+
+    new_text = "\n".join(lines)
+    if not new_text.endswith("\n"):
+        new_text += "\n"
+    return new_text, changes
 
 
 def get_app_start_addr(config_text: str) -> int | None:

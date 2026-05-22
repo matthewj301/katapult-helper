@@ -19,7 +19,7 @@ If you have more than one or two boards in your printer, re-flashing them after 
 git clone git@github.com:matthewj301/katapult-helper.git
 cd katapult-helper
 python3 -m venv .venv && source .venv/bin/activate
-pip install -e .
+pip install .
 ```
 
 Python 3.9+ (so it works on Raspberry Pi OS).

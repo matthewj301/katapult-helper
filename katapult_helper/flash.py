@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import re
 import subprocess
+import sys
 import time
 from pathlib import Path
 from typing import Optional
@@ -35,10 +36,10 @@ def query_katapult_status(inv: Inventory, board: Board) -> str | None:
         device = resolve_usb_path(board.chip_uid)
         if device is None or not is_katapult_mode(device):
             return None
-        cmd = ["python3", flashtool, "-d", str(device), "-s"]
+        cmd = [sys.executable, flashtool, "-d", str(device), "-s"]
     else:
         assert board.canbus_uuid
-        cmd = ["python3", flashtool, "-i", board.can_iface, "-u", board.canbus_uuid, "-s"]
+        cmd = [sys.executable, flashtool, "-i", board.can_iface, "-u", board.canbus_uuid, "-s"]
     try:
         result = subprocess.run(cmd, capture_output=True, text=True, check=False, timeout=15)
     except subprocess.TimeoutExpired:
@@ -131,7 +132,7 @@ def _request_can_bootloader(inv: Inventory, board: Board) -> bool:
     flashtool = str(inv.flashtool)
     try:
         run([
-            "python3", flashtool,
+            sys.executable, flashtool,
             "-i", board.can_iface,
             "-u", board.canbus_uuid,  # type: ignore[list-item]
             "-r",
@@ -221,15 +222,15 @@ def flash_board(inv: Inventory, board: Board, firmware: Path, *, force: bool = F
             if not is_katapult_mode(device):
                 logger.info("[{}] {} is in app mode; requesting bootloader",
                             board.name, device.name)
-                run(["python3", flashtool, "-d", str(device), "-r"])
+                run([sys.executable, flashtool, "-d", str(device), "-r"])
                 device = wait_for_usb(board.chip_uid)
                 # Now in Katapult — re-run the offset preflight if it was skipped above.
                 _preflight_offset_check(inv, board, force)
-            run(["python3", flashtool, "-d", str(device), "-f", str(firmware)])
+            run([sys.executable, flashtool, "-d", str(device), "-f", str(firmware)])
         else:
             assert board.canbus_uuid
             run([
-                "python3", flashtool,
+                sys.executable, flashtool,
                 "-i", board.can_iface,
                 "-u", board.canbus_uuid,
                 "-f", str(firmware),

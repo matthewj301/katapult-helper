@@ -9,7 +9,12 @@ from loguru import logger
 
 from ._proc import run
 from .inventory import Board, Inventory
-from .profiles import ProfileViolations, check_profile, resolve_board_profile
+from .profiles import (
+    ProfileViolations,
+    apply_profile_kconfig,
+    check_profile,
+    resolve_board_profile,
+)
 
 
 def warn_profile_violations(board: Board, config_path: Path) -> ProfileViolations | None:
@@ -48,6 +53,19 @@ def _build_failed(board: Board, step: str, exc: subprocess.CalledProcessError) -
     )
 
 
+def _apply_profile_fixes(board: Board, config_path: Path) -> None:
+    """Patch hardware-truth Kconfig values from the board's profile into .config."""
+    profile = resolve_board_profile(board.profile, board.mcu_family)
+    if profile is None or not config_path.exists():
+        return
+    text = config_path.read_text()
+    new_text, changes = apply_profile_kconfig(text, profile)
+    if changes:
+        config_path.write_text(new_text)
+        for change in changes:
+            logger.info("[{}] profile '{}': {}", board.name, profile.name, change)
+
+
 def build_board(inv: Inventory, board: Board, *, run_menuconfig: bool) -> Path:
     repo = inv.klipper_repo
     config_path = board.klipper_config.expanduser().resolve()
@@ -65,8 +83,9 @@ def build_board(inv: Inventory, board: Board, *, run_menuconfig: bool) -> Path:
             if not cfg_exists:
                 logger.warning("[{}] config not found; menuconfig will create it", board.name)
             run(["make", "menuconfig"], cwd=repo, env=env)
-        else:
-            run(["make", "olddefconfig"], cwd=repo, env=env)
+
+        _apply_profile_fixes(board, config_path)
+        run(["make", "olddefconfig"], cwd=repo, env=env)
 
         run(["make", f"-j{os.cpu_count() or 1}"], cwd=repo, env=env)
     except subprocess.CalledProcessError as e:
