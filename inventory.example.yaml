@@ -13,6 +13,10 @@
 #                  drives auto-derivation of `profile` if not set explicitly.
 #   can_iface:     CAN transport only; defaults to "can0".
 #   canbus_uuid:   CAN transport only; the 12-hex Katapult UUID.
+#   last_flashed:  machine-managed. `run`/`wizard` write a firmware fingerprint
+#                  here after each successful flash and skip the board next time
+#                  if it's unchanged. Don't set or edit it by hand; `--all` forces
+#                  a reflash regardless.
 #   profile:       optional. Names a hardware profile (see katapult_helper/profiles.py)
 #                  that encodes per-MCU truth: required Kconfig settings, settings
 #                  known to brick the chip, recommended defaults, and known-good

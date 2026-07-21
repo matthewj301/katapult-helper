@@ -250,3 +250,104 @@ def test_flash_missing_chip_uid_yields_friendly_error(tmp_path: Path) -> None:
             flash.flash_board(inv, board, tmp_path / "klipper.bin")
     assert "discover" in exc_info.value.message
     assert "ABSENT" in exc_info.value.message
+
+
+# --- guardrails: exact-identity resolution -------------------------------------
+
+def test_resolve_usb_path_requires_exact_uid_not_substring(tmp_path: Path) -> None:
+    """The cross-flash bug: a substring glob let one UID resolve to another
+    device whose name merely contained it. Resolution must be exact."""
+    by_id = _make_by_id(tmp_path, ["usb-Klipper_stm32f446xx_AAAA-if00"])
+    with patch.object(flash, "BY_ID", by_id):
+        assert flash.resolve_usb_path("AAA") is None      # substring must NOT match
+        assert flash.resolve_usb_path("AAAA") is not None  # exact still works
+
+
+def test_resolve_usb_path_does_not_cross_resolve_to_superstring_uid(tmp_path: Path) -> None:
+    """Board A's UID is a prefix of board B's. Resolving A must pick ONLY A —
+    this is the exact scenario that flashed firmware onto the wrong board."""
+    by_id = _make_by_id(tmp_path, [
+        "usb-Klipper_stm32f446xx_AAAA-if00",
+        "usb-Klipper_stm32g0b1xx_AAAABBBB-if00",
+    ])
+    with patch.object(flash, "BY_ID", by_id):
+        res = flash.resolve_usb_path("AAAA")
+    assert res is not None
+    assert res.name.endswith("AAAA-if00")
+
+
+def test_resolve_usb_path_raises_on_uid_collision_across_mcus(tmp_path: Path) -> None:
+    """Two boards sharing a non-unique USB serial but on different MCUs: we must
+    refuse rather than silently pick one."""
+    uid = "0000000000000000"
+    by_id = _make_by_id(tmp_path, [
+        f"usb-katapult_stm32f042x6_{uid}-if00",
+        f"usb-katapult_stm32g0b1xx_{uid}-if00",
+    ])
+    with patch.object(flash, "BY_ID", by_id):
+        with pytest.raises(flash.AmbiguousDeviceError):
+            flash.resolve_usb_path(uid)
+
+
+def test_resolve_usb_path_uid_match_is_case_insensitive(tmp_path: Path) -> None:
+    by_id = _make_by_id(tmp_path, ["usb-katapult_stm32g0b1xx_DEADBEEF-if00"])
+    with patch.object(flash, "BY_ID", by_id):
+        assert flash.resolve_usb_path("deadbeef") is not None
+
+
+# --- guardrails: per-flash explanation + approval ------------------------------
+
+def _usb_board(tmp_path: Path, uid: str = "DEADBEEF") -> Board:
+    return Board(
+        name="toolhead", transport="usb",
+        klipper_config=tmp_path / "toolhead.config", chip_uid=uid,
+    )
+
+
+def test_confirm_flash_assume_yes_returns_true_without_prompting(tmp_path: Path) -> None:
+    fw = tmp_path / "klipper.bin"
+    fw.write_text("x")
+    with (
+        patch.object(flash, "BY_ID", tmp_path / "noexist"),
+        patch.object(flash.Confirm, "ask") as ask,
+    ):
+        assert flash.confirm_flash(_usb_board(tmp_path), fw, assume_yes=True) is True
+    ask.assert_not_called()
+
+
+def test_confirm_flash_declined_returns_false(tmp_path: Path) -> None:
+    fw = tmp_path / "klipper.bin"
+    fw.write_text("x")
+    with (
+        patch.object(flash, "BY_ID", tmp_path / "noexist"),
+        patch.object(flash.Confirm, "ask", return_value=False) as ask,
+    ):
+        assert flash.confirm_flash(_usb_board(tmp_path), fw, assume_yes=False) is False
+    ask.assert_called_once()
+
+
+def test_describe_flash_shows_resolved_device_mode_and_firmware(tmp_path: Path) -> None:
+    uid = "DEADBEEF"
+    by_id = _make_by_id(tmp_path, [f"usb-katapult_stm32g0b1xx_{uid}-if00"])
+    fw = tmp_path / "klipper.bin"
+    fw.write_text("x" * 10)
+    with patch.object(flash, "BY_ID", by_id):
+        text = flash.describe_flash(_usb_board(tmp_path, uid), fw)
+    assert uid in text            # exact chip is named
+    assert "Katapult" in text     # current mode is surfaced
+    assert str(fw) in text        # the firmware path is shown
+
+
+def test_confirm_flash_ambiguous_device_propagates(tmp_path: Path) -> None:
+    """Ambiguity must surface at confirmation time — before we ever prompt or
+    write — not be swallowed."""
+    uid = "0000000000000000"
+    by_id = _make_by_id(tmp_path, [
+        f"usb-katapult_stm32f042x6_{uid}-if00",
+        f"usb-katapult_stm32g0b1xx_{uid}-if00",
+    ])
+    fw = tmp_path / "klipper.bin"
+    fw.write_text("x")
+    with patch.object(flash, "BY_ID", by_id):
+        with pytest.raises(flash.AmbiguousDeviceError):
+            flash.confirm_flash(_usb_board(tmp_path, uid), fw, assume_yes=True)

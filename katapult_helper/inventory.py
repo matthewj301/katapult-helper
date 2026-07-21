@@ -23,6 +23,10 @@ class Board:
     can_iface: str = "can0"
     canbus_uuid: str | None = None
     profile: str | None = None
+    # Fingerprint of the firmware last flashed to this board (klipper rev +
+    # .config hash). Machine-managed by `run`/`wizard`; used to skip boards that
+    # are already up to date. See fingerprint.py. Never set by hand.
+    last_flashed: str | None = None
 
     def __post_init__(self) -> None:
         if self.transport == "usb" and not self.chip_uid:
@@ -106,6 +110,7 @@ def build_inventory(raw: dict) -> Inventory:
             can_iface=str(entry.get("can_iface", "can0")),
             canbus_uuid=_str_or_none(entry.get("canbus_uuid")),
             profile=_str_or_none(entry.get("profile")),
+            last_flashed=_str_or_none(entry.get("last_flashed")),
         )
     return Inventory(klipper_repo=klipper_repo, katapult_repo=katapult_repo, boards=boards)
 
@@ -148,8 +153,25 @@ def upsert_board(
         new["can_iface"] = can_iface or "can0"
         new["canbus_uuid"] = canbus_uuid
 
-    existing = {str(k): str(v) for k, v in (boards.get(name) or {}).items()}
+    prior = boards.get(name) or {}
+    if prior.get("last_flashed"):
+        new["last_flashed"] = str(prior["last_flashed"])  # never drop on update
+    existing = {str(k): str(v) for k, v in prior.items()}
     if existing == new:
         return False
     boards[name] = new
     return True
+
+
+def record_flash(path: Path, board_name: str, fingerprint: str) -> None:
+    """Persist the fingerprint of the firmware just flashed to `board_name`,
+    round-trip so the user's comments/order survive. No-op if the board isn't
+    in the file (a manually-passed board we don't own)."""
+    raw = load_raw(path)
+    entry = (raw.get("boards") or {}).get(board_name)
+    if entry is None:
+        return
+    if str(entry.get("last_flashed", "")) == fingerprint:
+        return
+    entry["last_flashed"] = fingerprint
+    save_raw(path, raw)

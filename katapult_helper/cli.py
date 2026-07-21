@@ -12,7 +12,8 @@ from ._proc import klipper_stopped
 from .build import build_board
 from .configure import configure_all_missing, configure_board, ensure_make_available
 from .discover import discover_can, discover_usb, query_can_raw
-from .flash import flash_board
+from .fingerprint import is_up_to_date, record_flash_fingerprint
+from .flash import confirm_flash, flash_board, flash_plan_table
 from .inventory import InventoryError, Inventory, load_inventory
 from .wizard import run_wizard
 
@@ -136,16 +137,25 @@ def build(ctx: click.Context, names: tuple[str, ...], menuconfig: bool) -> None:
 @click.option("--force", is_flag=True,
               help="Bypass the bootloader-offset preflight check. Use only if you're certain "
                    "the build's CONFIG_FLASH_APPLICATION_ADDRESS matches the Katapult on the chip.")
+@click.option("--yes", "-y", is_flag=True,
+              help="Skip the per-board flash confirmation prompt (for scripted runs).")
 @click.pass_context
-def flash(ctx: click.Context, names: tuple[str, ...], firmware: Path | None, force: bool) -> None:
-    """Flash firmware to one or more boards. Does not rebuild."""
+def flash(ctx: click.Context, names: tuple[str, ...], firmware: Path | None,
+          force: bool, yes: bool) -> None:
+    """Flash firmware to one or more boards. Does not rebuild.
+
+    Prints a plan, then asks for confirmation before each board unless --yes."""
     inv = _load(ctx)
     boards = inv.select(names)
     fw = firmware or inv.klipper_bin
     if not fw.exists():
         raise click.UsageError(f"firmware not found: {fw} (run `build` first or pass --firmware)")
+    console.print(flash_plan_table(boards, fw))
     with klipper_stopped():
         for board in boards:
+            if not confirm_flash(board, fw, assume_yes=yes):
+                logger.warning("[{}] skipped by user", board.name)
+                continue
             flash_board(inv, board, fw, force=force)
 
 
@@ -154,28 +164,56 @@ def flash(ctx: click.Context, names: tuple[str, ...], firmware: Path | None, for
 @click.option("--menuconfig/--no-menuconfig", default=False)
 @click.option("--force", is_flag=True,
               help="Bypass the bootloader-offset preflight check.")
+@click.option("--yes", "-y", is_flag=True,
+              help="Skip the per-board flash confirmation prompt (for scripted runs).")
+@click.option("--all", "all_boards", is_flag=True,
+              help="Re-build and re-flash every board even if its firmware "
+                   "fingerprint is unchanged (disables the up-to-date skip).")
 @click.pass_context
-def run(ctx: click.Context, names: tuple[str, ...], menuconfig: bool, force: bool) -> None:
-    """Full pipeline: build then flash, board-by-board. Klipper restarts once at end."""
+def run(ctx: click.Context, names: tuple[str, ...], menuconfig: bool,
+        force: bool, yes: bool, all_boards: bool) -> None:
+    """Full pipeline: build then flash, board-by-board. Klipper restarts once at end.
+
+    Boards whose firmware fingerprint (klipper rev + .config) matches what was
+    last flashed are skipped unless --all. Each board is built first, then you
+    confirm before it is flashed (unless --yes)."""
     inv = _load(ctx)
+    inventory_path = ctx.obj["inventory_path"]
     logger.info("klipper repo: {} ({})", inv.klipper_repo, inv.repo_kind)
     boards = inv.select(names)
     with klipper_stopped():
         for board in boards:
+            up_to_date, fp = is_up_to_date(inv, board)
+            if up_to_date and not all_boards:
+                logger.info("[{}] firmware unchanged (fp {}…); skipping — use --all to force",
+                            board.name, (fp or "")[:12])
+                continue
             firmware = build_board(inv, board, run_menuconfig=menuconfig)
+            if not confirm_flash(board, firmware, assume_yes=yes):
+                logger.warning("[{}] built but flash skipped by user", board.name)
+                continue
             flash_board(inv, board, firmware, force=force)
+            record_flash_fingerprint(inventory_path, inv, board)
 
 
 @cli.command()
 @click.option("--no-flash", is_flag=True,
               help="Do everything except the actual flash (build only, useful for dry runs).")
+@click.option("--yes", "-y", is_flag=True,
+              help="Skip the per-board flash confirmation prompt (for scripted runs).")
+@click.option("--all", "all_boards", is_flag=True,
+              help="Re-build and re-flash every board even if its firmware "
+                   "fingerprint is unchanged (disables the up-to-date skip).")
 @click.pass_context
-def wizard(ctx: click.Context, no_flash: bool) -> None:
+def wizard(ctx: click.Context, no_flash: bool, yes: bool, all_boards: bool) -> None:
     """One-shot, end-to-end: discover unknown MCUs, add them to inventory,
-    walk through menuconfig for any missing .config, build, then flash all.
+    walk through menuconfig for any missing .config, build, then flash each
+    (asking for confirmation before every flash unless --yes). Boards whose
+    firmware fingerprint is unchanged are skipped unless --all.
     Stops klipper.service once at start and restarts it once at the end."""
     inv = _load(ctx)
-    run_wizard(ctx.obj["inventory_path"], do_flash=not no_flash, inv=inv)
+    run_wizard(ctx.obj["inventory_path"], do_flash=not no_flash, inv=inv,
+               assume_yes=yes, no_skip=all_boards)
 
 
 if __name__ == "__main__":

@@ -13,7 +13,8 @@ from ._proc import klipper_stopped
 from .build import build_board
 from .configure import configure_all_missing, ensure_make_available
 from .discover import discover_can, discover_usb
-from .flash import flash_board
+from .fingerprint import is_up_to_date, record_flash_fingerprint
+from .flash import confirm_flash, flash_board, flash_plan_table
 from .inventory import (
     Inventory,
     build_inventory,
@@ -139,11 +140,15 @@ def run_wizard(
     *,
     do_flash: bool,
     inv: Inventory | None = None,
+    assume_yes: bool = False,
+    no_skip: bool = False,
 ) -> None:
     """End-to-end flow: discover -> upsert -> configure missing -> build -> flash.
 
     If `inv` is provided, the caller has already validated/loaded it and we skip
-    the initial parse. Otherwise the file is loaded here.
+    the initial parse. Otherwise the file is loaded here. Each board is confirmed
+    individually before flashing unless `assume_yes` is set. Boards whose firmware
+    fingerprint is unchanged are skipped unless `no_skip` is set.
     """
     if inv is None:
         inv = load_inventory(inventory_path)
@@ -157,10 +162,17 @@ def run_wizard(
         logger.warning("inventory is empty; nothing to do")
         return
 
+    if not do_flash:
+        tail = "[dim]--no-flash: building only, nothing will be written.[/dim]"
+    elif assume_yes:
+        tail = ("[dim]klipper.service will be stopped once at start and restarted at the end. "
+                "Each flash is auto-approved (--yes).[/dim]")
+    else:
+        tail = ("[dim]klipper.service will be stopped once at start and restarted at the end. "
+                "You will be asked to confirm before EACH flash.[/dim]")
     console.print(Panel(
         f"Plan: walk through menuconfig for any of {len(inv.boards)} board(s) "
-        "missing a .config, then build → flash each.\n"
-        "[dim]klipper.service will be stopped once at start and restarted once at the end.[/dim]",
+        f"missing a .config, then build → flash each.\n{tail}",
         title="Wizard plan",
     ))
     if not Confirm.ask("Proceed?", default=True):
@@ -168,14 +180,28 @@ def run_wizard(
 
     configure_all_missing(inv)
 
+    boards = list(inv.boards.values())
+    if do_flash:
+        console.print(flash_plan_table(boards, inv.klipper_bin))
+
     bracket = klipper_stopped() if do_flash else contextlib.nullcontext()
     with bracket:
-        for board in inv.boards.values():
+        for board in boards:
+            if do_flash and not no_skip:
+                up_to_date, fp = is_up_to_date(inv, board)
+                if up_to_date:
+                    logger.info("[{}] firmware unchanged (fp {}…); skipping — "
+                                "use --all to force", board.name, (fp or "")[:12])
+                    continue
             firmware = build_board(inv, board, run_menuconfig=False)
-            if do_flash:
-                flash_board(inv, board, firmware, force=False)
-            else:
+            if not do_flash:
                 logger.info("[{}] skipping flash (--no-flash)", board.name)
+                continue
+            if not confirm_flash(board, firmware, assume_yes=assume_yes):
+                logger.warning("[{}] built but flash skipped by user", board.name)
+                continue
+            flash_board(inv, board, firmware, force=False)
+            record_flash_fingerprint(inventory_path, inv, board)
 
     console.print(Panel(
         "[bold green]Done.[/bold green] All boards configured, built, "

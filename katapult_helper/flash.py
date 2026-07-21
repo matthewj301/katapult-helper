@@ -9,10 +9,22 @@ from typing import Optional
 
 import click
 from loguru import logger
+from rich.console import Console
+from rich.panel import Panel
+from rich.prompt import Confirm
+from rich.table import Table
 
 from ._proc import BY_ID, is_katapult_mode, run
+from .discover import USB_NAME_RE
 from .inventory import Board, Inventory
 from .profiles import get_app_start_addr, resolve_board_profile
+
+console = Console()
+
+
+class AmbiguousDeviceError(click.ClickException):
+    """One chip_uid resolved to more than one distinct physical MCU on
+    /dev/serial/by-id — we refuse to guess which board to write."""
 
 # Per Katapult's flashtool.py: `f"Application Start: 0x{self.app_start_addr:4X}\n"`.
 # Python's `:4X` uses *space* padding when the value is < 4 hex digits, so the
@@ -98,11 +110,40 @@ def _flash_failed(board: Board, exc: subprocess.CalledProcessError) -> click.Cli
 
 
 def resolve_usb_path(chip_uid: str) -> Optional[Path]:
+    """Resolve the /dev/serial/by-id symlink for a board by its EXACT chip UID.
+
+    Each Klipper/Katapult by-id name encodes `usb-<product>_<mcu>_<uid>-ifNN`.
+    We parse every entry and compare the parsed `uid` field to `chip_uid`
+    *exactly* (case-insensitively) — never a substring. The old substring glob
+    (`*uid*`) let one board's UID resolve to another whose UID merely contained
+    it, which cross-flashed the wrong board. The UID is the stable identity
+    (invariant #1); matching it structurally is what makes that true.
+
+    Prefers the `-if00` interface. Returns None if nothing matches. Raises
+    AmbiguousDeviceError if the same UID appears on more than one distinct MCU
+    family (a serial-number collision — two boards we cannot tell apart).
+    """
     if not BY_ID.exists():
         return None
-    matches = sorted(BY_ID.glob(f"*{chip_uid}*"))
+    target = chip_uid.strip().lower()
+    matches: list[Path] = []
+    mcus: set[str] = set()
+    for entry in sorted(BY_ID.iterdir()):
+        m = USB_NAME_RE.match(entry.name)
+        if not m or m.group("uid").lower() != target:
+            continue
+        matches.append(entry)
+        mcus.add(m.group("mcu").lower())
     if not matches:
         return None
+    if len(mcus) > 1:
+        raise AmbiguousDeviceError(
+            f"chip_uid {chip_uid} resolves to multiple different MCUs "
+            f"({', '.join(sorted(mcus))}) on {BY_ID} — refusing to flash a board "
+            f"I cannot uniquely identify. Two boards likely share a non-unique "
+            f"USB serial. Disconnect all but the target board and retry, or fix "
+            f"the chip_uid in inventory.yaml."
+        )
     for p in matches:
         if p.name.endswith("-if00"):
             return p
@@ -201,6 +242,87 @@ def _preflight_offset_check(inv: Inventory, board: Board, force: bool) -> None:
             logger.warning("[{}] offset mismatch overridden by --force", board.name)
             return
         raise
+
+
+def _board_identifier(board: Board) -> str:
+    if board.transport == "usb":
+        return f"uid {board.chip_uid}"
+    return f"{board.can_iface}/{board.canbus_uuid}"
+
+
+def flash_plan_table(boards: list[Board], firmware: Path) -> Table:
+    """A batch overview printed before a flash/run/wizard loop touches anything,
+    so the user sees the full set and order up front."""
+    table = Table(title=f"Flash plan — {len(boards)} board(s), in this order")
+    table.add_column("#", justify="right", style="dim")
+    table.add_column("board", style="bold")
+    table.add_column("transport")
+    table.add_column("identifier")
+    table.add_column("firmware")
+    for i, b in enumerate(boards, 1):
+        table.add_row(str(i), b.name, b.transport, _board_identifier(b), str(firmware))
+    return table
+
+
+def describe_flash(board: Board, firmware: Path) -> str:
+    """Render the read-only, per-board explanation shown right before we ask for
+    approval. Resolves the live device (may raise AmbiguousDeviceError — good,
+    we refuse before prompting) but performs no state change."""
+    lines: list[str] = [
+        f"[bold]board:[/bold]      {board.name}",
+        f"[bold]transport:[/bold]  {board.transport}",
+    ]
+    if board.transport == "usb":
+        lines.append(f"[bold]chip_uid:[/bold]   {board.chip_uid}")
+        dev = resolve_usb_path(board.chip_uid) if board.chip_uid else None
+        if dev is None:
+            lines.append("[yellow]device:     NOT currently on /dev/serial/by-id[/yellow] "
+                         "(a bootloader request + wait will run at flash time)")
+        elif is_katapult_mode(dev):
+            lines.append(f"[bold]device:[/bold]     {dev}")
+            lines.append("[bold]mode:[/bold]       Katapult (bootloader) — ready to flash")
+        else:
+            lines.append(f"[bold]device:[/bold]     {dev}")
+            lines.append("[bold]mode:[/bold]       Klipper (app) — will be rebooted into "
+                         "Katapult via `-r` first")
+    else:
+        lines.append(f"[bold]CAN:[/bold]        {board.can_iface} / uuid {board.canbus_uuid}")
+        lines.append("[dim]if not already in Katapult mode, a CAN `-r` reboot request is "
+                     "sent first[/dim]")
+
+    if firmware.exists():
+        lines.append(f"[bold]firmware:[/bold]   {firmware} ({firmware.stat().st_size} bytes)")
+    else:
+        lines.append(f"[bold]firmware:[/bold]   {firmware} [red](MISSING)[/red]")
+
+    cfg = board.klipper_config.expanduser()
+    fw_off = get_app_start_addr(cfg.read_text()) if cfg.exists() else None
+    if fw_off is not None:
+        lines.append(f"[bold]build offset:[/bold] 0x{fw_off:X}  (CONFIG_FLASH_APPLICATION_ADDRESS)")
+    profile = resolve_board_profile(board.profile, board.mcu_family)
+    if profile and profile.katapult_offsets:
+        offs = ", ".join(f"0x{o:X}" for o in profile.katapult_offsets)
+        lines.append(f"[bold]profile offsets:[/bold] {offs}  [dim](profile {profile.name})[/dim]")
+
+    lines.append("")
+    lines.append("[dim]Before writing, the offset preflight reads the chip's actual "
+                 "Application Start and ABORTS on mismatch (unless --force).[/dim]")
+    return "\n".join(lines)
+
+
+def confirm_flash(board: Board, firmware: Path, *, assume_yes: bool) -> bool:
+    """Show the per-board plan and get explicit approval. Returns True to
+    proceed, False to skip this board. `assume_yes` (from --yes) auto-approves
+    after still printing the panel, so a scripted run is never silent."""
+    console.print(Panel(
+        describe_flash(board, firmware),
+        title=f"About to flash: {board.name}",
+        border_style="yellow",
+    ))
+    if assume_yes:
+        logger.info("[{}] auto-approved (--yes)", board.name)
+        return True
+    return Confirm.ask(f"Flash [bold]{board.name}[/bold] now?", default=False)
 
 
 def flash_board(inv: Inventory, board: Board, firmware: Path, *, force: bool = False) -> None:
